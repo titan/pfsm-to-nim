@@ -99,16 +99,6 @@ transitionActionMatrix ss es egts ts ats
                                                                         v = map ((+ 1) . cast . natToInteger) $ Data.List.index (foldl (\acc, x => acc ++ (show x)) "" as) ats in
                                                                         updateStateMatrix s c v m
 
-stateActionTags : (State -> Maybe (List Action)) -> List State -> List String
-stateActionTags f ss
-  = SortedSet.toList $ stateActionTags' f ss empty
-  where
-    stateActionTags' : (State -> Maybe (List Action)) -> List State -> SortedSet String -> SortedSet String
-    stateActionTags' _ []        acc = acc
-    stateActionTags' f (x :: xs) acc = case f x of
-                                          Just as => stateActionTags' f xs $ insert (show as) acc
-                                          Nothing => stateActionTags' f xs acc
-
 stateActionMatrix : (State -> State -> Maybe (List Action)) -> (states : List State) -> List String -> Matrix (1 + length states) (1 + length states) Int
 stateActionMatrix f ss tags
   = calcActions f ss ss tags $ create (1 + length ss) (1 + length ss) 0
@@ -123,7 +113,7 @@ stateActionMatrix f ss tags
 
     calcActions : (State -> State -> Maybe (List Action)) -> List State -> (states: List State) -> List String -> Matrix (1 + length states) (1 + length states) Int -> Matrix (1 + length states) (1 + length states) Int
     calcActions f []        _      _    m = m
-    calcActions f (x :: xs) states tags m = calcActions f xs states tags $ calcActionVector f (minus (minus (length states)(length xs)) 1) x states states tags m
+    calcActions f (x :: xs) states tags m = calcActions f xs states tags $ calcActionVector f (minus (minus (length states) (length xs)) 1) x states states tags m
 
 
 uniqueActionsOfTransition : Transition -> List (List Action)
@@ -136,18 +126,12 @@ uniqueActionsOfTransitions ts
 actionsOfState : (State -> Maybe (List Action)) -> State -> List Action
 actionsOfState f s = fromMaybe [] (f s)
 
+uniqueActionsOfStates : (State -> Maybe (List Action)) -> List State -> List (List Action)
+uniqueActionsOfStates f ss
+  = Data.SortedSet.toList $ foldl (\acc, x => insert x acc) empty $ filter (\x => length x > 0) $ map (actionsOfState f) ss
+
 uniqueGuardsOfTransition : Transition -> List TestExpression
 uniqueGuardsOfTransition t = Data.SortedSet.toList $ foldl (\acc, (MkTrigger _ _ x _) => case x of Nothing => acc; Just g => insert g acc) empty t.triggers
-
-stateActions : (State -> Maybe (List Action)) -> List State -> List (List Action)
-stateActions f ss
-  = stateActions' f ss []
-  where
-    stateActions' : (State -> Maybe (List Action)) -> List State -> List (List Action) -> List (List Action)
-    stateActions' f []        acc = acc
-    stateActions' f (x :: xs) acc = case f x of
-                                         Just as => stateActions' f xs $ as :: acc
-                                         Nothing => stateActions' f xs acc
 
 liftParametersFromEvents : List Event -> List (Name, Tipe)
 liftParametersFromEvents = Data.SortedSet.toList . (foldl (\acc, x => insert (fst x, (fst . snd) x) acc) empty) . (nubBy (\x, y => fst x == fst y)) . concat . (map params)
@@ -221,7 +205,7 @@ toNimModelAttribute "@" = "model"
 toNimModelAttribute a
   = if isPrefixOf "@" a
        then "model." ++ toNimName (substr 1 (minus (length a) 1) a)
-       else a
+       else toNimName a
 
 toNimExpression : String -> Expression -> String
 toNimExpression "fsm.guard_delegate" (ApplicationExpression n es) = "fsm.guard_delegate" ++ "." ++ (toNimName n) ++ "(" ++ (join ", " (map (toNimExpression "fsm.guard_delegate") ((IdentifyExpression "model") :: es))) ++ ")"
@@ -402,7 +386,7 @@ toNim fsm
         generateTransitionActionType : Nat -> String -> List Event -> String
         generateTransitionActionType idt pre es
           = let params = liftParametersFromEvents es
-                paramcodes = foldl (\acc, (n, t) => acc ++ ", " ++ (toNimName n) ++ "Opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model") params in
+                paramcodes = foldl (\acc, (n, t) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model") params in
                 (repeat " " idt) ++ "TransitionActionFunc = proc (" ++ paramcodes ++ "): " ++ pre ++ "Model"
 
         generateStateActionType : Nat -> String -> String
@@ -414,8 +398,8 @@ toNim fsm
             es   = fsm.events
             ts   = fsm.transitions
             egts = eventGuardTags es ts
-            ents = stateActionTags (\s => s.onEnter ) ss
-            exts = stateActionTags (\s => s.onExit ) ss
+            ents = map show $ uniqueActionsOfStates (.onEnter) ss
+            exts = map show $ uniqueActionsOfStates (.onExit) ss
             ats  = actionTags ts in
             foldl (\a, x => a ++ "\n\n" ++ x) "" [generateTransitionStateMatrix ss es egts ts, generateTransitionActionMatrix ss es egts ts ats, generateStateOnEnterMatrix ss ents, generateStateOnExitMatrix ss exts]
       where
@@ -475,7 +459,7 @@ toNim fsm
           where
             generateActionsBody' : Nat -> String -> List String -> List Name -> String -> String -> List String -> String
             generateActionsBody' idt pre bodies []        acc1 acc2 args = acc1 ++ (join "\n" (map (\x => (repeat " " idt) ++ x) (args ++ bodies ++ ["result = model\n"]))) ++ acc2
-            generateActionsBody' idt pre bodies (n :: ns) acc1 acc2 args = generateActionsBody' (idt + indentDelta) pre bodies ns (acc1 ++ (repeat " " idt) ++ "if " ++ n ++ "Opt.isSome:\n") ((repeat " " idt) ++ "else:\n" ++ (repeat " " (idt + indentDelta)) ++ "result = model\n" ++ acc2) (("let " ++ n ++ " = " ++ n ++ "Opt.get") :: args)
+            generateActionsBody' idt pre bodies (n :: ns) acc1 acc2 args = generateActionsBody' (idt + indentDelta) pre bodies ns (acc1 ++ (repeat " " idt) ++ "if " ++ (toNimName n) ++ "_opt.isSome:\n") ((repeat " " idt) ++ "else:\n" ++ (repeat " " (idt + indentDelta)) ++ "result = model\n" ++ acc2) (("let " ++ (toNimName n) ++ " = " ++ (toNimName n) ++ "_opt.get") :: args)
 
         generateActionsCode : List Action -> List String
         generateActionsCode acts
@@ -491,13 +475,13 @@ toNim fsm
     generateTransitionActions pre ss es ts
       = let as = uniqueActionsOfTransitions ts
             params = liftParametersFromEvents es
-            paramcodes = foldl (\acc, (n, t) => acc ++ ", " ++ (toNimName n) ++ "Opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model") params
+            paramcodes = foldl (\acc, (n, t) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model") params
             funcs = map (generateAction pre "transition" paramcodes) (Data.List.enumerate ([] :: as)) in
             join "\n\n" funcs
 
     generateStateActions : (State -> Maybe (List Action)) -> String -> String -> List State -> String
     generateStateActions f pre funpre ss
-      = let as = nubBy (\x, y => (show x) == (show y)) (stateActions f ss)
+      = let as = uniqueActionsOfStates f ss
             funcs = map (generateAction pre funpre ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model")) (Data.List.enumerate ([] :: as)) in
             join "\n\n" funcs
 
@@ -531,16 +515,16 @@ toNim fsm
         generateEvent : String -> Event -> List TestExpression -> List String -> List (Name, Tipe) -> String
         generateEvent pre e gs egts ps
           = let eparams = map (\(n, t, _) => (n, t)) e.params
-                paramcodes = join ", " $ map (\(n, t) => (toNimName n) ++ ": " ++ (toNimType t)) eparams
+                paramcodes = join ", " $ map (\(n, t) => (toNimName n) ++ ": " ++ (toNimType t)) (("fsm", TRecord (pre ++ "StateMachine") []) :: (("model", TRecord (pre ++ "Model") []) :: eparams))
                 args = generateArguments eparams ps []
-                signature = "proc " ++ (toNimName e.name) ++ "*" ++ "(fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model" ++ paramcodes ++ "): " ++ pre ++ "Model ="
+                signature = "proc " ++ (toNimName e.name) ++ "*" ++ "(" ++ paramcodes ++ "): " ++ pre ++ "Model ="
                 body = join "\n" [generateEventBody indentDelta egts e gs, (repeat " " indentDelta) ++ "result = exec(fsm, model, idx" ++ (foldl (\acc, x => acc ++ ", " ++ x) "" args) ++ ")"] in
                 signature ++ "\n" ++ body
           where
             generateArguments : List (Name, Tipe) -> List (Name, Tipe) -> List String -> List String
             generateArguments eps [] acc = reverse acc
             generateArguments eps (a@(n, t) :: xs) acc = if elemBy (==) a eps
-                                                            then generateArguments eps xs $ ("some(" ++ n ++ ")") :: acc
+                                                            then generateArguments eps xs $ ("some(" ++ (toNimName n) ++ ")") :: acc
                                                             else generateArguments eps xs $ ("none(" ++ (toNimType t) ++ ")") :: acc
 
     generateInternalExec : Fsm -> String
@@ -549,8 +533,8 @@ toNim fsm
             statelen = length fsm.states
             es  = fsm.events
             params = liftParametersFromEvents es
-            paramcodes = foldl (\acc, (n, t) => acc ++ ", " ++ (toNimName n) ++ "Opt: Option[" ++ (toNimType t) ++ "]") ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, idx: int") params
-            argcodes = foldl (\acc, (n, t) => acc ++ ", " ++ (toNimName n) ++ "Opt") (the String "fsm, model1") params in
+            paramcodes = foldl (\acc, (n, t) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]") ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, idx: int") params
+            argcodes = foldl (\acc, (n, t) => acc ++ ", " ++ (toNimName n) ++ "_opt") (the String "fsm, model1") params in
             join "\n" [ "proc exec(" ++ paramcodes ++ "): " ++ pre ++ "Model ="
                       , (repeat " " indentDelta) ++ "let"
                       , (repeat " " (indentDelta * 2)) ++ "oldstate = model.state"
