@@ -115,31 +115,6 @@ stateActionMatrix f ss tags
     calcActions f []        _      _    m = m
     calcActions f (x :: xs) states tags m = calcActions f xs states tags $ calcActionVector f (minus (minus (length states) (length xs)) 1) x states states tags m
 
-
-uniqueActionsOfTransition : Transition -> List (List Action)
-uniqueActionsOfTransition t = Data.SortedSet.toList $ foldl (\acc, x => insert (fromMaybe [] x.actions) acc) empty t.triggers
-
-uniqueActionsOfTransitions : List Transition -> List (List Action)
-uniqueActionsOfTransitions ts
-  = Data.SortedSet.toList $ foldl (\acc, x => foldl (\acc', y => insert y acc') acc x) empty $ map uniqueActionsOfTransition ts
-
-actionsOfState : (State -> Maybe (List Action)) -> State -> List Action
-actionsOfState f s = fromMaybe [] (f s)
-
-uniqueActionsOfStates : (State -> Maybe (List Action)) -> List State -> List (List Action)
-uniqueActionsOfStates f ss
-  = Data.SortedSet.toList $ foldl (\acc, x => insert x acc) empty $ filter (\x => length x > 0) $ map (actionsOfState f) ss
-
-uniqueGuardsOfTransition : Transition -> List TestExpression
-uniqueGuardsOfTransition t = Data.SortedSet.toList $ foldl (\acc, (MkTrigger _ _ x _) => case x of Nothing => acc; Just g => insert g acc) empty t.triggers
-
-liftParametersFromEvents : List Event -> List (Name, Tipe)
-liftParametersFromEvents = Data.SortedSet.toList . (foldl (\acc, x => insert (fst x, (fst . snd) x) acc) empty) . (nubBy (\x, y => fst x == fst y)) . concat . (map params)
-
-constructTArrow : List Tipe -> Tipe -> Tipe
-constructTArrow []        acc = acc
-constructTArrow (x :: xs) acc = constructTArrow xs $ (TArrow x acc)
-
 nimBuiltinTypes : List String
 nimBuiltinTypes = [ "int" , "int8" , "int16" , "int32" , "int64" , "uint" , "uint8" , "uint16" , "uint32" , "uint64" , "float" , "floa t32" , "float64" , "true" , "false" , "char" , "string" , "cstring" ]
 
@@ -147,7 +122,7 @@ nimKeywords : List String
 nimKeywords = [ "addr" , "and" , "as" , "asm" , "bind" , "block" , "break" , "case" , "cast" , "concept" , "const" , "continue" , "converter" , "defer" , "discard" , "distinct" , "div" , "do" , "elif" , "else" , "end" , "enum" , "except" , "export" , "finally" , "for" , "from" , "func" , "if" , "import" , "in" , "include" , "interface" , "is" , "isnot" , "iterator" , "let" , "macro" , "method" , "mixin" , "mod" , "nil" , "not" , "notin" , "object" , "of" , "or" , "out" , "proc" , "ptr" , "raise" , "ref" , "return" , "shl" , "shr" , "static" , "template" , "try" , "tuple" , "type" , "using" , "var" , "when" , "while" , "xor" , "yield" ]
 
 intMatrixToNim : {r, c: Nat} -> (Int -> String) -> Matrix r c Int -> String
-intMatrixToNim {r} {c} f (MkMatrix xs) = Data.Vect.join ",\n" (map (\x => (repeat " " indentDelta) ++ x) (map (\x => Data.Vect.join ", " (map f x)) xs))
+intMatrixToNim {r} {c} f (MkMatrix xs) = Data.Vect.join ",\n" (map (\x => (indent indentDelta) ++ x) (map (\x => Data.Vect.join ", " (map f x)) xs))
 
 primToNimType : PrimType -> String
 primToNimType t
@@ -235,14 +210,14 @@ toNimTestExpression (CompareExpression op e1 e2) = (toNimExpression "fsm.guard_d
 
 toNim : Fsm -> String
 toNim fsm
-  = foldl (\acc, x => acc ++ "\n\n" ++ x) "" [ generateImports
-                                             , generateTypes fsm
-                                             , (generateActions fsm)
-                                             , (generateMatrixs fsm)
-                                             , (generateInternalExec fsm)
-                                             , (generateEvents fsm)
-                                             , (generateInitModel fsm)
-                                             ]
+  = join "\n\n" [ generateImports
+                , generateTypes fsm
+                , generateActions fsm
+                , generateMatrixs fsm
+                , generateInternalExec fsm
+                , generateEvents fsm
+                , generateInitModel fsm
+                ]
   where
     generateImports : String
     generateImports = "import options\n"
@@ -250,11 +225,13 @@ toNim fsm
     generateTypes : Fsm -> String
     generateTypes fsm
       = let pre = camelize fsm.name
-            actions = (nub (flatten (map flatten [flatten (map uniqueActionsOfTransition fsm.transitions), map (actionsOfState onEnter) fsm.states, map (actionsOfState onExit) fsm.states])))
-            guards = nub $ flatten (map uniqueGuardsOfTransition fsm.transitions)
-            ads = generateActionDelegates indentDelta pre fsm.model fsm.events actions
-            ods = generateOutputDelegates indentDelta pre fsm.model fsm.events actions
-            gds = generateGuardDelegates indentDelta pre fsm.model fsm.events guards in
+            env = rootEnv fsm
+            aas = assignmentActions fsm
+            oas = outputActions fsm
+            ges = nub $ filter applicationExpressionFilter $ flatten $ map expressionsOfTestExpression $ flatten $ map guardsOfTransition fsm.transitions
+            ads = generateActionDelegates indentDelta pre env aas
+            ods = generateOutputDelegates indentDelta pre env oas
+            gds = generateGuardDelegates indentDelta pre env ges in
             join "\n" [ "type"
                       , generateModel indentDelta pre (filter (\(n, _, _) => n /= "state" ) fsm.model)
                       , generateStates indentDelta pre fsm.states
@@ -266,17 +243,25 @@ toNim fsm
                       , generateStateActionType indentDelta pre
                       ]
       where
-        generateModel : Nat -> String -> List (Name, Tipe, Maybe (List Meta)) -> String
-        generateModel indent pre as
-          = let head = (repeat " " indent) ++ pre ++ "Model* = ref object of RootObj"
-                body = join "\n" $ map (\(n, t, _) => (repeat " " (indent + indentDelta)) ++ (toNimName n) ++ "*: " ++ (toNimType t)) (("state", (TPrimType PTInt), Nothing) :: as) in
-                join "\n" [head, body]
+        generateModel : Nat -> String -> List Parameter -> String
+        generateModel idt pre as
+          = join "\n" [ (indent idt) ++ pre ++ "Model* = ref object of RootObj"
+                      , join "\n" $ map (generateAttribute (idt + indentDelta)) (("state", (TPrimType PTInt), Nothing) :: as)
+                      ]
+          where
+            generateAttribute : Nat -> Parameter -> String
+            generateAttribute idt (n, t, _)
+              = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
 
         generateStates : Nat -> String -> List State -> String
-        generateStates indent pre ss
-          = let head = (repeat " " indent) ++ pre ++ "State* = enum"
-                body = (join ",\n" (map (\(i, x) => (repeat " " (indent + indentDelta)) ++ (camelize x.name) ++ " = " ++ (show (i + 1))) (enumerate ss))) in
-                join "\n" [head, body]
+        generateStates idt pre ss
+          = join "\n" [ (indent idt) ++ pre ++ "State* = enum"
+                      , join "\n" $ map (\(i, x) => generateState (idt + indentDelta) i x) (enumerate ss)
+                      ]
+          where
+            generateState : Nat -> Nat -> State -> String
+            generateState idt idx (MkState n _ _ _)
+              = (indent idt) ++ (camelize (toNimName n)) ++ " = " ++ (show (idx + 1))
 
         liftArrowParams : Tipe -> List Tipe -> List Tipe
         liftArrowParams (TArrow a b@(TArrow _ _)) acc = liftArrowParams b (a :: acc)
@@ -290,107 +275,84 @@ toNim fsm
         fixTypeOfApplicationExpression env _                       (Just rt) = Just (TArrow TUnit rt)
         fixTypeOfApplicationExpression env _                       _         = Nothing
 
-        generateActionDelegates : Nat -> String -> List Parameter -> List Event -> List Action -> String
-        generateActionDelegates idt pre model es as
-          = let eventParams = liftParametersFromEvents es
-                env' = foldl (\acc, (n, t, _) => insert (IdentifyExpression ("@" ++ n)) t acc) Data.SortedMap.empty model
-                env = foldl (\acc, (n, t) => insert (IdentifyExpression n) t acc) env' eventParams
-                eps = (Data.SortedSet.toList . (foldl (\acc, x => applicationExpressionFilter x acc) empty)) as
+        generateActionDelegates : Nat -> String -> SortedMap Expression Tipe -> List Action -> String
+        generateActionDelegates idt pre env as
+          = let eps = SortedSet.toList $ foldl (\acc, x => applicationExpressionOfAction x acc) SortedSet.empty as
                 fps = foldl (\acc, x => case x of Just x' => x' :: acc; Nothing => acc) (the (List (Name, Tipe)) []) $ map (inferTypeOfExpressions env) eps
-                head = (repeat " " idt) ++ pre ++ "ActionDelegate* = ref object of RootObj"
-                body = join "\n" (map (\(n, t) => (repeat " " (idt + indentDelta)) ++ (generateActionDelegateSignature n t)) (the (List (Name, Tipe)) fps)) in
+                head = (indent idt) ++ pre ++ "ActionDelegate* = ref object of RootObj"
+                body = join "\n" (map (\(n, t) => (generateActionDelegate (idt + indentDelta) n t)) fps) in
                 if length fps > Z
                    then join "\n" [head, body]
                    else ""
           where
-            generateActionDelegateSignature : Name -> Tipe -> String
-            generateActionDelegateSignature n t = (toNimName n) ++ "*: " ++ (toNimType t)
+            generateActionDelegate: Nat -> Name -> Tipe -> String
+            generateActionDelegate idt n t = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
 
-            applicationExpressionFilter : Action -> SortedSet (Expression, Expression) -> SortedSet (Expression, Expression)
-            applicationExpressionFilter a es
-              = case a of
-                     AssignmentAction l e@(ApplicationExpression _ _) => insert (l, e) es
-                     _ => es
+            applicationExpressionOfAction : Action -> SortedSet (Expression, Expression) -> SortedSet (Expression, Expression)
+            applicationExpressionOfAction (AssignmentAction l e@(ApplicationExpression _ _)) acc = insert (l, e) acc
+            applicationExpressionOfAction _                                                  acc = acc
 
             inferTypeOfExpressions : SortedMap Expression Tipe -> (Expression, Expression) -> Maybe (String, Tipe)
             inferTypeOfExpressions env (l, r@(ApplicationExpression n _)) = Just (n, maybe TUnit id (fixTypeOfApplicationExpression env (inferType env r) (inferType env l)))
             inferTypeOfExpressions _   _                                  = Nothing
 
-        generateOutputDelegates : Nat -> String -> List Parameter -> List Event -> List Action -> String
-        generateOutputDelegates idt pre model es as
-          = let eventParams = liftParametersFromEvents es
-                env' = foldl (\acc, (n, t, _) => insert (IdentifyExpression ("@" ++ n)) t acc) Data.SortedMap.empty model
-                env = foldl (\acc, (n, t) => insert (IdentifyExpression n) t acc) env' eventParams
-                oes = (Data.SortedMap.toList . (foldl (\acc, x => outputExpressionFilter x acc) empty)) as
-                fps = map (\(n, t) => (n, TArrow (TRecord (pre ++ "Model") []) t)) $ map (inferTypeOfOutputExpressions env) oes
-                head = (repeat " " idt) ++ pre ++ "OutputDelegate* = ref object of RootObj"
-                body = join "\n" (map (\(n, t) => (repeat " " (idt + indentDelta)) ++ (generateOutputDelegateSignature n t)) fps) in
+        generateOutputDelegates : Nat -> String -> SortedMap Expression Tipe -> List Action -> String
+        generateOutputDelegates idt pre env as
+          = let
+                oes = (SortedMap.toList . (foldl (\acc, x => expressionOfOutputAction x acc) SortedMap.empty)) as
+                fps = map (\(n, t) => (n, TArrow (TRecord (pre ++ "Model") []) t)) $ map (inferTypeOfExpressions env) oes
+                head = (indent idt) ++ pre ++ "OutputDelegate* = ref object of RootObj"
+                body = join "\n" (map (\(n, t) => (generateOutputDelegate (idt + indentDelta) n t)) fps) in
                 if length fps > 0
                    then join "\n" [head, body]
                    else ""
           where
-            generateOutputDelegateSignature : Name -> Tipe -> String
-            generateOutputDelegateSignature n t = (toNimName n) ++ "*: " ++ (toNimType t)
+            generateOutputDelegate : Nat -> Name -> Tipe -> String
+            generateOutputDelegate idt n t = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
 
-            outputExpressionFilter : Action -> SortedMap Name (List Expression) -> SortedMap Name (List Expression)
-            outputExpressionFilter a acc
-              = case a of
-                     OutputAction n es => insert n es acc
-                     _ => acc
+            expressionOfOutputAction : Action -> SortedMap Name (List Expression) -> SortedMap Name (List Expression)
+            expressionOfOutputAction (OutputAction n es) acc = insert n es acc
+            expressionOfOutputAction _                   acc = acc
 
-            inferTypeOfOutputExpressions : SortedMap Expression Tipe -> (Name, List Expression) -> (Name, Tipe)
-            inferTypeOfOutputExpressions env (n, es) = (n, constructTArrow (reverse (map ((maybe TUnit id ) . (inferType env)) es)) TUnit)
+            inferTypeOfExpressions : SortedMap Expression Tipe -> (Name, List Expression) -> (Name, Tipe)
+            inferTypeOfExpressions env (n, es) = (n, constructTArrow (reverse (map ((maybe TUnit id ) . (inferType env)) es)) TUnit)
 
-        generateGuardDelegates : Nat -> String -> List Parameter -> List Event -> List TestExpression -> String
-        generateGuardDelegates idt pre model es gs
-          = let eventParams = liftParametersFromEvents es
-                env' = foldl (\acc, (n, t, _) => insert (IdentifyExpression ("@" ++ n)) t acc) Data.SortedMap.empty model
-                env = foldl (\acc, (n, t) => insert (IdentifyExpression n) t acc) env' eventParams
-                aes = Data.List.nub (flatten (map (\x => liftApplicationExpressionFromTestExpression x []) gs))
-                fps = foldl (\acc, x => case x of Just x' => x' :: acc; Nothing => acc) (the (List (Name, Tipe)) []) $ map (inferTypeOfGuardExpressions env (TRecord (pre ++ "Model") [])) aes
-                head = (repeat " " idt) ++ pre ++ "GuardDelegate* = ref object of RootObj"
-                body = join "\n" (map (\(n, t) => (repeat " " (idt + indentDelta)) ++ (generateGuardDelegateSignature n t)) (the (List (Name, Tipe)) fps)) in
+        generateGuardDelegates : Nat -> String -> SortedMap Expression Tipe -> List Expression -> String
+        generateGuardDelegates idt pre env ges
+          = let fps = foldl (\acc, x => case x of Just x' => x' :: acc; Nothing => acc) (the (List (Name, Tipe)) []) $ map (inferTypeOfExpressions env (TRecord (pre ++ "Model") [])) ges
+                head = (indent idt) ++ pre ++ "GuardDelegate* = ref object of RootObj"
+                body = join "\n" (map (\(n, t) => (generateGuardDelegate (idt + indentDelta) n t)) fps) in
                 if length fps > Z
                    then join "\n" [head, body]
                    else ""
           where
-            generateGuardDelegateSignature : Name -> Tipe -> String
-            generateGuardDelegateSignature n t = (toNimName n) ++ "*: " ++ (toNimType t)
+            generateGuardDelegate : Nat -> Name -> Tipe -> String
+            generateGuardDelegate idt n t = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
 
-            liftApplicationExpressionFromTestExpression : TestExpression -> List Expression -> List Expression
-            liftApplicationExpressionFromTestExpression (PrimitiveTestExpression e@(ApplicationExpression _ _))                             acc = e :: acc
-            liftApplicationExpressionFromTestExpression (PrimitiveTestExpression _)                                                         acc = acc
-            liftApplicationExpressionFromTestExpression (BinaryTestExpression _ be1 be2)                                                    acc = liftApplicationExpressionFromTestExpression be1 $ liftApplicationExpressionFromTestExpression be2 acc
-            liftApplicationExpressionFromTestExpression (UnaryTestExpression _ be)                                                          acc = liftApplicationExpressionFromTestExpression be acc
-            liftApplicationExpressionFromTestExpression (CompareExpression _ e1@(ApplicationExpression _ _) e2@(ApplicationExpression _ _)) acc = e2 :: (e1 :: acc)
-            liftApplicationExpressionFromTestExpression (CompareExpression _ e@(ApplicationExpression _ _) _)                               acc = e :: acc
-            liftApplicationExpressionFromTestExpression (CompareExpression _ _ e@(ApplicationExpression _ _))                               acc = e :: acc
-            liftApplicationExpressionFromTestExpression (CompareExpression _ _ _)                                                           acc = acc
-
-            inferTypeOfGuardExpressions : SortedMap Expression Tipe -> Tipe -> Expression -> Maybe (Name, Tipe)
-            inferTypeOfGuardExpressions env firstArgType r@(ApplicationExpression n _) = case fixTypeOfApplicationExpression env (inferType env r) (Just (TPrimType PTBool)) of
-                                                                                              Just (TArrow TUnit (TPrimType PTBool)) => Just (n, (TArrow firstArgType (TPrimType PTBool)))
-                                                                                              Just a => Just (n, (TArrow firstArgType a))
-                                                                                              Nothing => Nothing
-            inferTypeOfGuardExpressions _   _            _                             = Nothing
+            inferTypeOfExpressions : SortedMap Expression Tipe -> Tipe -> Expression -> Maybe (Name, Tipe)
+            inferTypeOfExpressions env firstArgType r@(ApplicationExpression n _) = case fixTypeOfApplicationExpression env (inferType env r) (Just (TPrimType PTBool)) of
+                                                                                         Just (TArrow TUnit (TPrimType PTBool)) => Just (n, (TArrow firstArgType (TPrimType PTBool)))
+                                                                                         Just a => Just (n, (TArrow firstArgType a))
+                                                                                         Nothing => Nothing
+            inferTypeOfExpressions _   _            _                             = Nothing
 
         generateStateMachine : Nat -> String -> Bool -> Bool -> Bool -> String
         generateStateMachine idt pre ads ods gds
-          = let head = (repeat " " idt) ++ pre ++ "StateMachine* = ref object of RootObj"
-                ad = if ads then (repeat " " (idt + indentDelta)) ++ "action_delegate*: " ++ pre ++ "ActionDelegate" else ""
-                od = if ods then (repeat " " (idt + indentDelta)) ++ "output_delegate*: " ++ pre ++ "OutputDelegate" else ""
-                gd = if gds then (repeat " " (idt + indentDelta)) ++ "guard_delegate*: " ++ pre ++ "GuardDelegate" else ""
+          = let head = (indent idt) ++ pre ++ "StateMachine* = ref object of RootObj"
+                ad = if ads then (indent (idt + indentDelta)) ++ "action_delegate*: " ++ pre ++ "ActionDelegate" else ""
+                od = if ods then (indent (idt + indentDelta)) ++ "output_delegate*: " ++ pre ++ "OutputDelegate" else ""
+                gd = if gds then (indent (idt + indentDelta)) ++ "guard_delegate*: " ++ pre ++ "GuardDelegate" else ""
                 body = join "\n" (filter (\x => 0 /= length x) [ad, od, gd]) in
                 join "\n" [head, body]
 
         generateTransitionActionType : Nat -> String -> List Event -> String
         generateTransitionActionType idt pre es
-          = let params = liftParametersFromEvents es
-                paramcodes = foldl (\acc, (n, t) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model") params in
-                (repeat " " idt) ++ "TransitionActionFunc = proc (" ++ paramcodes ++ "): " ++ pre ++ "Model"
+          = let params = parametersOfEvents es
+                paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model") params in
+                (indent idt) ++ "TransitionActionFunc = proc (" ++ paramcodes ++ "): " ++ pre ++ "Model"
 
         generateStateActionType : Nat -> String -> String
-        generateStateActionType idt pre = (repeat " " idt) ++ "StateActionFunc = proc (fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model): " ++ pre ++ "Model"
+        generateStateActionType idt pre = (indent idt) ++ "StateActionFunc = proc (fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model): " ++ pre ++ "Model"
 
     generateMatrixs : Fsm -> String
     generateMatrixs fsm
@@ -398,10 +360,14 @@ toNim fsm
             es   = fsm.events
             ts   = fsm.transitions
             egts = eventGuardTags es ts
-            ents = map show $ uniqueActionsOfStates (.onEnter) ss
-            exts = map show $ uniqueActionsOfStates (.onExit) ss
+            ents = map show $ actionsOfStates (.onEnter) ss
+            exts = map show $ actionsOfStates (.onExit) ss
             ats  = actionTags ts in
-            foldl (\a, x => a ++ "\n\n" ++ x) "" [generateTransitionStateMatrix ss es egts ts, generateTransitionActionMatrix ss es egts ts ats, generateStateOnEnterMatrix ss ents, generateStateOnExitMatrix ss exts]
+            join "\n\n" [ generateTransitionStateMatrix ss es egts ts
+                        , generateTransitionActionMatrix ss es egts ts ats
+                        , generateStateOnEnterMatrix ss ents
+                        , generateStateOnExitMatrix ss exts
+                        ]
       where
 
         generateTransitionStateMatrix : List State -> List Event -> List String -> List Transition -> String
@@ -458,8 +424,8 @@ toNim fsm
           = generateActionsBody' idt pre bodies ns "" "" []
           where
             generateActionsBody' : Nat -> String -> List String -> List Name -> String -> String -> List String -> String
-            generateActionsBody' idt pre bodies []        acc1 acc2 args = acc1 ++ (join "\n" (map (\x => (repeat " " idt) ++ x) (args ++ bodies ++ ["result = model\n"]))) ++ acc2
-            generateActionsBody' idt pre bodies (n :: ns) acc1 acc2 args = generateActionsBody' (idt + indentDelta) pre bodies ns (acc1 ++ (repeat " " idt) ++ "if " ++ (toNimName n) ++ "_opt.isSome:\n") ((repeat " " idt) ++ "else:\n" ++ (repeat " " (idt + indentDelta)) ++ "result = model\n" ++ acc2) (("let " ++ (toNimName n) ++ " = " ++ (toNimName n) ++ "_opt.get") :: args)
+            generateActionsBody' idt pre bodies []        acc1 acc2 args = acc1 ++ (join "\n" (map (\x => (indent idt) ++ x) (args ++ bodies ++ ["result = model\n"]))) ++ acc2
+            generateActionsBody' idt pre bodies (n :: ns) acc1 acc2 args = generateActionsBody' (idt + indentDelta) pre bodies ns (acc1 ++ (indent idt) ++ "if " ++ (toNimName n) ++ "_opt.isSome:\n") ((indent idt) ++ "else:\n" ++ (indent (idt + indentDelta)) ++ "result = model\n" ++ acc2) (("let " ++ (toNimName n) ++ " = " ++ (toNimName n) ++ "_opt.get") :: args)
 
         generateActionsCode : List Action -> List String
         generateActionsCode acts
@@ -473,15 +439,15 @@ toNim fsm
 
     generateTransitionActions : String -> List State -> List Event -> List Transition -> String
     generateTransitionActions pre ss es ts
-      = let as = uniqueActionsOfTransitions ts
-            params = liftParametersFromEvents es
-            paramcodes = foldl (\acc, (n, t) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model") params
+      = let as = actionsOfTransitions ts
+            params = parametersOfEvents es
+            paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model") params
             funcs = map (generateAction pre "transition" paramcodes) (Data.List.enumerate ([] :: as)) in
             join "\n\n" funcs
 
     generateStateActions : (State -> Maybe (List Action)) -> String -> String -> List State -> String
     generateStateActions f pre funpre ss
-      = let as = uniqueActionsOfStates f ss
+      = let as = actionsOfStates f ss
             funcs = map (generateAction pre funpre ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model")) (Data.List.enumerate ([] :: as)) in
             join "\n\n" funcs
 
@@ -491,7 +457,10 @@ toNim fsm
             ss  = fsm.states
             es  = fsm.events
             ts  = fsm.transitions in
-            join "\n\n" [generateTransitionActions pre ss es ts, generateStateActions (\x => x.onEnter) pre "on_enter" ss, generateStateActions (\x => x.onExit) pre "on_exit" ss]
+            join "\n\n" [ generateTransitionActions pre ss es ts
+                        , generateStateActions (.onEnter) pre "on_enter" ss
+                        , generateStateActions (.onExit) pre "on_exit" ss
+                        ]
 
     generateEvents : Fsm -> String
     generateEvents fsm
@@ -499,51 +468,53 @@ toNim fsm
             es     = fsm.events
             ts     = flatten $ map (.triggers) fsm.transitions
             egts   = eventGuardTags es fsm.transitions
-            params = liftParametersFromEvents es in
+            params = parametersOfEvents es in
             join "\n\n" $ map (\(e, gs) => generateEvent pre e gs egts params) $ zipEventWithGuards es ts
       where
         generateEventBody : Nat -> List String -> Event -> List TestExpression -> String
-        generateEventBody idt egts e []           = (repeat " " idt) ++ "let idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index (show e) egts))
-        generateEventBody idt egts e gs@(x :: xs) = (repeat " " idt) ++ "var idx = 0\n" ++ (((join "\n") . reverse) $ generateEventBody' idt egts e gs True [])
+        generateEventBody idt egts e []           = (indent idt) ++ "let idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index (show e) egts))
+        generateEventBody idt egts e gs@(x :: xs) = (indent idt) ++ "var idx = 0\n" ++ (((join "\n") . reverse) $ generateEventBody' idt egts e gs True [])
           where
             generateEventBody' : Nat -> List String -> Event -> List TestExpression -> Bool -> List String -> List String
-            generateEventBody' idt egts e []        _       acc = ((repeat " " idt) ++ "else:\n" ++ (repeat " " (idt + indentDelta)) ++ "idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index (show e) egts))) :: acc
+            generateEventBody' idt egts e []        _       acc = ((indent idt) ++ "else:\n" ++ (indent (idt + indentDelta)) ++ "idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index (show e) egts))) :: acc
             generateEventBody' idt egts e (x :: xs) isFirst acc = let ifcode = if isFirst then "if " else "elif "
-                                                                      code = (repeat " " idt) ++ ifcode ++ (toNimTestExpression x) ++ ":\n" ++ (repeat " " (idt + indentDelta)) ++ "idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index ((show e) ++ (show x)) egts)) in
+                                                                      code = (indent idt) ++ ifcode ++ (toNimTestExpression x) ++ ":\n" ++ (indent (idt + indentDelta)) ++ "idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index ((show e) ++ (show x)) egts)) in
                                                                       generateEventBody' idt egts e xs False $ code :: acc
 
-        generateEvent : String -> Event -> List TestExpression -> List String -> List (Name, Tipe) -> String
+        generateEvent : String -> Event -> List TestExpression -> List String -> List Parameter -> String
         generateEvent pre e gs egts ps
-          = let eparams = map (\(n, t, _) => (n, t)) e.params
-                paramcodes = join ", " $ map (\(n, t) => (toNimName n) ++ ": " ++ (toNimType t)) (("fsm", TRecord (pre ++ "StateMachine") []) :: (("model", TRecord (pre ++ "Model") []) :: eparams))
+          = let eparams = e.params
+                paramcodes = join ", " $ map (\(n, t, _) => (toNimName n) ++ ": " ++ (toNimType t)) (("fsm", TRecord (pre ++ "StateMachine") [], Nothing) :: (("model", TRecord (pre ++ "Model") [], Nothing) :: eparams))
                 args = generateArguments eparams ps []
                 signature = "proc " ++ (toNimName e.name) ++ "*" ++ "(" ++ paramcodes ++ "): " ++ pre ++ "Model ="
-                body = join "\n" [generateEventBody indentDelta egts e gs, (repeat " " indentDelta) ++ "result = exec(fsm, model, idx" ++ (foldl (\acc, x => acc ++ ", " ++ x) "" args) ++ ")"] in
+                body = join "\n" [ generateEventBody indentDelta egts e gs
+                                 , (indent indentDelta) ++ (foldl (\acc, x => acc ++ ", " ++ x) "result = exec(fsm, model, idx" args) ++ ")"
+                                 ] in
                 signature ++ "\n" ++ body
           where
-            generateArguments : List (Name, Tipe) -> List (Name, Tipe) -> List String -> List String
+            generateArguments : List Parameter -> List Parameter -> List String -> List String
             generateArguments eps [] acc = reverse acc
-            generateArguments eps (a@(n, t) :: xs) acc = if elemBy (==) a eps
-                                                            then generateArguments eps xs $ ("some(" ++ (toNimName n) ++ ")") :: acc
-                                                            else generateArguments eps xs $ ("none(" ++ (toNimType t) ++ ")") :: acc
+            generateArguments eps (a@(n, t, _) :: xs) acc = if elemBy (==) a eps
+                                                               then generateArguments eps xs $ ("some(" ++ (toNimName n) ++ ")") :: acc
+                                                               else generateArguments eps xs $ ("none(" ++ (toNimType t) ++ ")") :: acc
 
     generateInternalExec : Fsm -> String
     generateInternalExec fsm
       = let pre = camelize fsm.name
             statelen = length fsm.states
             es  = fsm.events
-            params = liftParametersFromEvents es
-            paramcodes = foldl (\acc, (n, t) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]") ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, idx: int") params
-            argcodes = foldl (\acc, (n, t) => acc ++ ", " ++ (toNimName n) ++ "_opt") (the String "fsm, model1") params in
+            params = parametersOfEvents es
+            paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]") ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, idx: int") params
+            argcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt") (the String "fsm, model1") params in
             join "\n" [ "proc exec(" ++ paramcodes ++ "): " ++ pre ++ "Model ="
-                      , (repeat " " indentDelta) ++ "let"
-                      , (repeat " " (indentDelta * 2)) ++ "oldstate = model.state"
-                      , (repeat " " (indentDelta * 2)) ++ "newstate = model.state + transition_states[idx]"
-                      , (repeat " " (indentDelta * 2)) ++ "model1 = on_exit_actions[oldstate * " ++ (show (statelen + 1)) ++ " + newstate](fsm, model)"
-                      , (repeat " " (indentDelta * 2)) ++ "model2 = transition_actions[idx](" ++ argcodes ++ ")"
-                      , (repeat " " (indentDelta * 2)) ++ "model3 = on_enter_actions[oldstate * " ++ (show (statelen + 1)) ++ " + newstate](fsm, model2)"
-                      , (repeat " " indentDelta) ++ "model3.state = newstate"
-                      , (repeat " " indentDelta) ++ "result = model3"
+                      , (indent indentDelta) ++ "let"
+                      , (indent (indentDelta * 2)) ++ "oldstate = model.state"
+                      , (indent (indentDelta * 2)) ++ "newstate = model.state + transition_states[idx]"
+                      , (indent (indentDelta * 2)) ++ "model1 = on_exit_actions[oldstate * " ++ (show (statelen + 1)) ++ " + newstate](fsm, model)"
+                      , (indent (indentDelta * 2)) ++ "model2 = transition_actions[idx](" ++ argcodes ++ ")"
+                      , (indent (indentDelta * 2)) ++ "model3 = on_enter_actions[oldstate * " ++ (show (statelen + 1)) ++ " + newstate](fsm, model2)"
+                      , (indent indentDelta) ++ "model3.state = newstate"
+                      , (indent indentDelta) ++ "result = model3"
                       ]
 
     generateInitModel : Fsm -> String
@@ -554,7 +525,7 @@ toNim fsm
                                    Nothing => "0"
             startStateStr = fromMaybe defaultStateStr (map (\x => "ord(" ++ pre ++ "State." ++ (camelize x.name) ++ ")") (startState fsm)) in
             join "\n" [ "proc init" ++ pre ++ "Model*(): " ++ pre ++ "Model ="
-                      , (repeat " " indentDelta) ++ "result = " ++ pre ++ "Model(state: " ++ startStateStr ++ ")"
+                      , (indent indentDelta) ++ "result = " ++ pre ++ "Model(state: " ++ startStateStr ++ ")"
                       ]
 
 
