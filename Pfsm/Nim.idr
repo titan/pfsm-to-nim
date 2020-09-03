@@ -25,17 +25,13 @@ zipEventWithGuards es ts
   = zipEventWithGuards' es ts empty
   where
     zipEventWithGuards' : List Event -> List Trigger -> SortedMap Event (List TestExpression) -> List (Event, List TestExpression)
-    zipEventWithGuards' es []                                  acc = toList acc
-    zipEventWithGuards' es ((MkTrigger _ er (Just g) _) :: ts) acc = case derefEvent er es of
-                                                                          Nothing => zipEventWithGuards' es ts acc
-                                                                          Just e => case lookup e acc of
-                                                                                         Just gs => zipEventWithGuards' es ts $ insert e (nub (g :: gs)) acc
-                                                                                         Nothing => zipEventWithGuards' es ts $ insert e [g] acc
-    zipEventWithGuards' es ((MkTrigger _ er Nothing _) :: ts)  acc = case derefEvent er es of
-                                                                          Nothing => zipEventWithGuards' es ts acc
-                                                                          Just e => case lookup e acc of
-                                                                                         Just gs => zipEventWithGuards' es ts acc
-                                                                                         Nothing => zipEventWithGuards' es ts $ insert e [] acc
+    zipEventWithGuards' es []                                 acc = toList acc
+    zipEventWithGuards' es ((MkTrigger _ e (Just g) _) :: ts) acc = case lookup e acc of
+                                                                         Just gs => zipEventWithGuards' es ts $ insert e (nub (g :: gs)) acc
+                                                                         Nothing => zipEventWithGuards' es ts $ insert e [g] acc
+    zipEventWithGuards' es ((MkTrigger _ e Nothing _) :: ts)  acc = case lookup e acc of
+                                                                         Just gs => zipEventWithGuards' es ts acc
+                                                                         Nothing => zipEventWithGuards' es ts $ insert e [] acc
 
 eventGuardTags : List Event -> List Transition -> List String
 eventGuardTags evts trans
@@ -56,21 +52,18 @@ updateStateMatrix         _          _          _        m = m
 
 stateMatrix : (states: List State) -> List Event -> (eventGuards: List String) -> List Transition -> Matrix (1 + (length states)) (length eventGuards) Int
 stateMatrix ss es egts ts
-  = let ssstr = map (\x => x.name) ss
-        matrix = create (1 + (length ss)) (length egts) (the Int 0) in
-        foldl (\acc, x => let s = Data.List.index x.src ssstr
-                              d = Data.List.index x.dst ssstr
+  = let matrix = create (1 + (length ss)) (length egts) (the Int 0) in
+        foldl (\acc, x => let s = Data.List.index x.src ss
+                              d = Data.List.index x.dst ss
                               v = Just (-) <*> map cast d <*> map cast s in
                               foldl (\acc', y => updateMatrix es egts s v y acc') acc x.triggers
                               ) matrix ts
   where
     updateMatrix : {row: Nat} -> (events: List Event) -> (eventGuards: List String) -> Maybe Nat -> Maybe Int -> Trigger -> Matrix row (length eventGuards) Int -> Matrix row (length eventGuards) Int
-    updateMatrix es egts s v (MkTrigger _ er Nothing _)  m = let e : Maybe Nat
-                                                                 e = fromMaybe Nothing $ map (flip Data.List.index egts) (map show (derefEvent er es)) in
-                                                                 updateStateMatrix (map (+ 1) s) e v m
-    updateMatrix es egts s v (MkTrigger _ er (Just g) _) m = let e : Maybe Nat
-                                                                 e = fromMaybe Nothing $ map (flip Data.List.index egts) (map (\x => (show x) ++ show g) (derefEvent er es)) in
-                                                                 updateStateMatrix (map (+ 1) s) e v m
+    updateMatrix es egts s v (MkTrigger _ evt Nothing _)  m = let e = Data.List.index (show evt) egts in
+                                                                  updateStateMatrix (map (+ 1) s) e v m
+    updateMatrix es egts s v (MkTrigger _ evt (Just g) _) m = let e = Data.List.index ((show evt) ++ show g) egts in
+                                                                  updateStateMatrix (map (+ 1) s) e v m
 
 actionTags : List Transition -> List String
 actionTags trans
@@ -83,19 +76,18 @@ actionTags trans
 
 transitionActionMatrix : (states: List State) -> List Event -> (eventGuards: List String) -> List Transition -> List String -> Matrix (1 + length states) (length eventGuards) Int
 transitionActionMatrix ss es egts ts ats
-  = let ssstr = map (\x => x.name) ss
-        matrix = create (1 + (length ss)) (length egts) (the Int 0) in
-        foldl (\acc, x => let s = map (+ 1) $ Data.List.index x.src ssstr in
+  = let matrix = create (1 + (length ss)) (length egts) (the Int 0) in
+        foldl (\acc, x => let s = map (+ 1) $ Data.List.index x.src ss in
                               foldl (\acc', y => calcAction es egts ats s y acc') acc x.triggers
                               ) matrix ts
   where
     calcAction : {r: Nat} -> List Event -> (eventGuards: List String) -> List String -> Maybe Nat -> Trigger -> Matrix r (length eventGuards) Int -> Matrix r (length eventGuards) Int
     calcAction es egts ats s (MkTrigger _ e _        Nothing)   m = m
     calcAction es egts ats s (MkTrigger _ e _        (Just [])) m = m
-    calcAction es egts ats s (MkTrigger _ e Nothing  (Just as)) m = let c = fromMaybe Nothing $ map (\x => Data.List.index (show x) egts) (derefEvent e es)
+    calcAction es egts ats s (MkTrigger _ e Nothing  (Just as)) m = let c = Data.List.index (show e) egts
                                                                         v = map ((+ 1) . cast . natToInteger) $ Data.List.index (foldl (\acc, x => acc ++ (show x)) "" as) ats in
                                                                         updateStateMatrix s c v m
-    calcAction es egts ats s (MkTrigger _ e (Just g) (Just as)) m = let c = fromMaybe Nothing $ map (\x => Data.List.index ((show x) ++ (show g)) egts) (derefEvent e es)
+    calcAction es egts ats s (MkTrigger _ e (Just g) (Just as)) m = let c = Data.List.index ((show e) ++ (show g)) egts
                                                                         v = map ((+ 1) . cast . natToInteger) $ Data.List.index (foldl (\acc, x => acc ++ (show x)) "" as) ats in
                                                                         updateStateMatrix s c v m
 
