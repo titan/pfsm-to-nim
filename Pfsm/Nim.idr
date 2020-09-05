@@ -182,7 +182,7 @@ toNimExpression _      (BooleanExpression False)    = "false"
 toNimExpression _      (IdentifyExpression i)       = toNimModelAttribute i
 toNimExpression _      (IntegerLiteralExpression i) = show i
 toNimExpression _      (RealLiteralExpression r)    = show r
-toNimExpression _      (StringLiteralExpression s)  = show s
+toNimExpression _      (StringLiteralExpression s)  = "\"" ++ s ++ "\""
 
 toNimCompareOperation : CompareOperation -> String
 toNimCompareOperation NotEqualsToOperation         = "!="
