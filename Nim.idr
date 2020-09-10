@@ -1,4 +1,4 @@
-module Pfsm.Nim
+module Nim
 
 import Data.Maybe
 import Data.Fin
@@ -15,6 +15,7 @@ import Pfsm.Analyser
 import Pfsm.Checker
 import Pfsm.Data
 import Pfsm.Matrix
+import Pfsm.Nim
 import Pfsm.Parser
 
 indentDelta : Nat
@@ -107,96 +108,8 @@ stateActionMatrix f ss tags
     calcActions f []        _      _    m = m
     calcActions f (x :: xs) states tags m = calcActions f xs states tags $ calcActionVector f (minus (minus (length states) (length xs)) 1) x states states tags m
 
-nimBuiltinTypes : List String
-nimBuiltinTypes = [ "int" , "int8" , "int16" , "int32" , "int64" , "uint" , "uint8" , "uint16" , "uint32" , "uint64" , "float" , "floa t32" , "float64" , "true" , "false" , "char" , "string" , "cstring" ]
-
-nimKeywords : List String
-nimKeywords = [ "addr" , "and" , "as" , "asm" , "bind" , "block" , "break" , "case" , "cast" , "concept" , "const" , "continue" , "converter" , "defer" , "discard" , "distinct" , "div" , "do" , "elif" , "else" , "end" , "enum" , "except" , "export" , "finally" , "for" , "from" , "func" , "if" , "import" , "in" , "include" , "interface" , "is" , "isnot" , "iterator" , "let" , "macro" , "method" , "mixin" , "mod" , "nil" , "not" , "notin" , "object" , "of" , "or" , "out" , "proc" , "ptr" , "raise" , "ref" , "return" , "shl" , "shr" , "static" , "template" , "try" , "tuple" , "type" , "using" , "var" , "when" , "while" , "xor" , "yield" ]
-
 intMatrixToNim : {r, c: Nat} -> (Int -> String) -> Matrix r c Int -> String
 intMatrixToNim {r} {c} f (MkMatrix xs) = Data.Vect.join ",\n" (map (\x => (indent indentDelta) ++ x) (map (\x => Data.Vect.join ", " (map f x)) xs))
-
-primToNimType : PrimType -> String
-primToNimType t
-  = case t of
-         PTBool   => "bool"
-         PTByte   => "uint8"
-         PTChar   => "char"
-         PTShort  => "int16"
-         PTUShort => "uint16"
-         PTInt    => "int"
-         PTUInt   => "uint"
-         PTLong   => "int64"
-         PTULong  => "uint64"
-         PTReal   => "float64"
-         PTString => "string"
-
-toNimName : Name -> String
-toNimName n
-  = let n' = normalize n in
-    if elemBy (==) n' nimKeywords
-       then "my_" ++ n'
-       else n'
-  where
-    mappings : List (String, String)
-    mappings =  [ (" ", "_")
-                , ("-", "_")
-                , ("+", "plus")
-                ]
-    normalize : Name -> String
-    normalize n = foldl (\acc, x => replaceAll (fst x) (snd x) acc) n mappings
-
-toNimType : Tipe -> String
-toNimType TUnit          = "void"
-toNimType (TPrimType t)  = primToNimType t
-toNimType (TList t)      = "seq[" ++ (toNimType t) ++ "]"
-toNimType (TDict k v)    = "table[" ++ (primToNimType k) ++ "," ++ (toNimType v) ++ "]"
-toNimType (TRecord n ts) = toNimName n
-toNimType t@(TArrow a b) = case liftArrowParams t [] of
-                                []      => toNimFuncType []           TUnit
-                                x :: xs => toNimFuncType (reverse xs) x
-                        where
-                          liftArrowParams : Tipe -> List Tipe -> List Tipe
-                          liftArrowParams (TArrow a b@(TArrow _ _)) acc = liftArrowParams b (a :: acc)
-                          liftArrowParams (TArrow a b)              acc = b :: (a :: acc)
-                          liftArrowParams _                         acc = acc
-
-                          toNimFuncType : List Tipe -> Tipe -> String
-                          toNimFuncType as r
-                              = let args = join ", " (map (\(i, x) => "a" ++ (show i) ++ ": " ++ toNimType(x)) (enumerate as))
-                                    ret  = toNimType r in
-                                    "proc (" ++ args ++ "): " ++ ret
-
-toNimModelAttribute : String -> String
-toNimModelAttribute "@" = "model"
-toNimModelAttribute a
-  = if isPrefixOf "@" a
-       then "model." ++ toNimName (substr 1 (minus (length a) 1) a)
-       else toNimName a
-
-toNimExpression : String -> Expression -> String
-toNimExpression "fsm.guard_delegate" (ApplicationExpression n es) = "fsm.guard_delegate" ++ "." ++ (toNimName n) ++ "(" ++ (join ", " (map (toNimExpression "fsm.guard_delegate") ((IdentifyExpression "model") :: es))) ++ ")"
-toNimExpression caller (ApplicationExpression n es) = caller ++ "." ++ (toNimName n) ++ "(" ++ (join ", " (map (toNimExpression caller) es)) ++ ")"
-toNimExpression _      (BooleanExpression True)     = "true"
-toNimExpression _      (BooleanExpression False)    = "false"
-toNimExpression _      (IdentifyExpression i)       = toNimModelAttribute i
-toNimExpression _      (IntegerLiteralExpression i) = show i
-toNimExpression _      (RealLiteralExpression r)    = show r
-toNimExpression _      (StringLiteralExpression s)  = "\"" ++ s ++ "\""
-
-toNimCompareOperation : CompareOperation -> String
-toNimCompareOperation NotEqualsToOperation         = "!="
-toNimCompareOperation EqualsToOperation            = "=="
-toNimCompareOperation LessThanOperation            = "<"
-toNimCompareOperation LessThanOrEqualsToOperation  = "<="
-toNimCompareOperation GreatThanOperation           = ">"
-toNimCompareOperation GreatThanOrEqualsToOperation = ">="
-
-toNimTestExpression : TestExpression -> String
-toNimTestExpression (PrimitiveTestExpression e) = toNimExpression "fsm.guard_delegate" e
-toNimTestExpression (BinaryTestExpression op e1 e2) = (toNimTestExpression e1) ++ " " ++ (show op) ++ " " ++ (toNimTestExpression e2)
-toNimTestExpression (UnaryTestExpression op e) = (show op) ++ " " ++ (toNimTestExpression e)
-toNimTestExpression (CompareExpression op e1 e2) = (toNimExpression "fsm.guard_delegate" e1) ++ " " ++ (toNimCompareOperation op) ++ " " ++ (toNimExpression "fsm.guard_delegate" e2)
 
 %hide Data.Vect.(::)
 
@@ -212,7 +125,11 @@ toNim fsm
                 ]
   where
     generateImports : String
-    generateImports = "import options\n"
+    generateImports
+      = join "\n" $ map ("import " ++) [ "options"
+                                       , "strtabs"
+                                       , "tables"
+                                       ]
 
     generateTypes : Fsm -> String
     generateTypes fsm
@@ -470,7 +387,7 @@ toNim fsm
             generateEventBody' : Nat -> List String -> Event -> List TestExpression -> Bool -> List String -> List String
             generateEventBody' idt egts e []        _       acc = ((indent idt) ++ "else:\n" ++ (indent (idt + indentDelta)) ++ "idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index (show e) egts))) :: acc
             generateEventBody' idt egts e (x :: xs) isFirst acc = let ifcode = if isFirst then "if " else "elif "
-                                                                      code = (indent idt) ++ ifcode ++ (toNimTestExpression x) ++ ":\n" ++ (indent (idt + indentDelta)) ++ "idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index ((show e) ++ (show x)) egts)) in
+                                                                      code = (indent idt) ++ ifcode ++ (toNimTestExpression "fsm.guard_delegate" x) ++ ":\n" ++ (indent (idt + indentDelta)) ++ "idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index ((show e) ++ (show x)) egts)) in
                                                                       generateEventBody' idt egts e xs False $ code :: acc
 
         generateEvent : String -> Event -> List TestExpression -> List String -> List Parameter -> String

@@ -1,6 +1,6 @@
 package pfsm-to-nim
 
 depends = contrib, pfsm
-main = Pfsm.Nim
+main = Nim
 executable = pfsm-to-nim
 
