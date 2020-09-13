@@ -141,16 +141,16 @@ toNim fsm
             ads = generateActionDelegates indentDelta pre env aas
             ods = generateOutputDelegates indentDelta pre env oas
             gds = generateGuardDelegates indentDelta pre env ges in
-            join "\n" [ "type"
-                      , generateModel indentDelta pre (filter (\(n, _, _) => n /= "state" ) fsm.model)
-                      , generateStates indentDelta pre fsm.states
-                      , ads
-                      , ods
-                      , gds
-                      , generateStateMachine indentDelta pre (0 /= length ads) (0 /= length ods) (0 /= length gds)
-                      , generateTransitionActionType indentDelta pre fsm.events
-                      , generateStateActionType indentDelta pre
-                      ]
+            join "\n" $ filter nonblank [ "type"
+                                        , generateModel indentDelta pre (filter (\(n, _, _) => n /= "state" ) fsm.model)
+                                        , generateStates indentDelta pre fsm.states
+                                        , ads
+                                        , ods
+                                        , gds
+                                        , generateStateMachine indentDelta pre (0 /= length ads) (0 /= length ods) (0 /= length gds)
+                                        , generateTransitionActionType indentDelta pre fsm.events
+                                        , generateStateActionType indentDelta pre
+                                        ]
       where
         generateModel : Nat -> String -> List Parameter -> String
         generateModel idt pre as
@@ -352,13 +352,13 @@ toNim fsm
             params = parametersOfEvents es
             paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model") params
             funcs = map (generateAction pre "transition" paramcodes) (Data.List.enumerate ([] :: as)) in
-            join "\n\n" funcs
+            join "\n" funcs
 
     generateStateActions : (State -> Maybe (List Action)) -> String -> String -> List State -> String
     generateStateActions f pre funpre ss
       = let as = actionsOfStates f ss
             funcs = map (generateAction pre funpre ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model")) (Data.List.enumerate ([] :: as)) in
-            join "\n\n" funcs
+            join "\n" funcs
 
     generateActions : Fsm -> String
     generateActions fsm
@@ -366,10 +366,10 @@ toNim fsm
             ss  = fsm.states
             es  = fsm.events
             ts  = fsm.transitions in
-            join "\n\n" [ generateTransitionActions pre ss es ts
-                        , generateStateActions (.onEnter) pre "on_enter" ss
-                        , generateStateActions (.onExit) pre "on_exit" ss
-                        ]
+            join "\n" [ generateTransitionActions pre ss es ts
+                      , generateStateActions (.onEnter) pre "on_enter" ss
+                      , generateStateActions (.onExit) pre "on_exit" ss
+                      ]
 
     generateEvents : Fsm -> String
     generateEvents fsm
