@@ -135,6 +135,7 @@ toNim fsm
     generateTypes fsm
       = let pre = camelize fsm.name
             env = rootEnv fsm
+            rks = liftRecords fsm.model
             aas = assignmentActions fsm
             oas = outputActions fsm
             ges = nub $ filter applicationExpressionFilter $ flatten $ map expressionsOfTestExpression $ flatten $ map guardsOfTransition fsm.transitions
@@ -142,7 +143,8 @@ toNim fsm
             ods = generateOutputDelegates indentDelta pre env oas
             gds = generateGuardDelegates indentDelta pre env ges in
             join "\n" $ filter nonblank [ "type"
-                                        , generateModel indentDelta pre (filter (\(n, _, _) => n /= "state" ) fsm.model)
+                                        , generateRecords indentDelta rks
+                                        , generateModel indentDelta pre (filter (\(n, _, _) => n /= "state") fsm.model)
                                         , generateStates indentDelta pre fsm.states
                                         , ads
                                         , ods
@@ -152,15 +154,25 @@ toNim fsm
                                         , generateStateActionType indentDelta pre
                                         ]
       where
+        generateAttribute : Nat -> Parameter -> String
+        generateAttribute idt (n, t, _)
+          = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
+
+        generateRecords : Nat -> List Tipe -> String
+        generateRecords idt ts
+            = join "\n" $ filter nonblank $ map (generateRecord idt) ts
+          where
+            generateRecord : Nat -> Tipe -> String
+            generateRecord idt (TRecord n ps) = join "\n" [ (indent idt) ++ (camelize n) ++ "* = ref object of RootObj"
+                                                          , join "\n" $ map (generateAttribute (idt + indentDelta)) ps
+                                                          ]
+            generateRecord idt _              = ""
+
         generateModel : Nat -> String -> List Parameter -> String
         generateModel idt pre as
           = join "\n" [ (indent idt) ++ pre ++ "Model* = ref object of RootObj"
                       , join "\n" $ map (generateAttribute (idt + indentDelta)) (("state", (TPrimType PTInt), Nothing) :: as)
                       ]
-          where
-            generateAttribute : Nat -> Parameter -> String
-            generateAttribute idt (n, t, _)
-              = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
 
         generateStates : Nat -> String -> List State -> String
         generateStates idt pre ss
