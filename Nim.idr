@@ -199,7 +199,7 @@ toNim fsm
         generateActionDelegates : Nat -> String -> SortedMap Expression Tipe -> List Action -> String
         generateActionDelegates idt pre env as
           = let eps = SortedSet.toList $ foldl (\acc, x => applicationExpressionOfAction x acc) SortedSet.empty as
-                fps = foldl (\acc, x => case x of Just x' => x' :: acc; Nothing => acc) (the (List (Name, Tipe)) []) $ map (inferTypeOfExpressions env) eps
+                fps = SortedMap.toList $ foldl (\acc, x => case x of Just (n, t) => insert n t acc; Nothing => acc) SortedMap.empty $ map (inferTypeOfExpressions env) eps
                 head = (indent idt) ++ pre ++ "ActionDelegate* = ref object of RootObj"
                 body = join "\n" (map (\(n, t) => (generateActionDelegate (idt + indentDelta) n t)) fps) in
                 if length fps > Z
@@ -207,7 +207,7 @@ toNim fsm
                    else ""
           where
             generateActionDelegate: Nat -> Name -> Tipe -> String
-            generateActionDelegate idt n t = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
+            generateActionDelegate idt n t = (indent idt) ++ (toNimFuncName n) ++ "*: " ++ (toNimType t)
 
             applicationExpressionOfAction : Action -> SortedSet (Expression, Expression) -> SortedSet (Expression, Expression)
             applicationExpressionOfAction (AssignmentAction l e@(ApplicationExpression _ _)) acc = insert (l, e) acc
@@ -325,7 +325,7 @@ toNim fsm
       where
         liftUsedArgumentsFromActions : List Action -> List Name
         liftUsedArgumentsFromActions acts
-          = liftUsedArgumentsFromActions' acts []
+          = SortedSet.toList $ liftUsedArgumentsFromActions' acts SortedSet.empty
           where
             liftUsedArgumentsFromExpression : Expression -> List Name
             liftUsedArgumentsFromExpression (IdentifyExpression s)       = if isPrefixOf "@" s
@@ -334,10 +334,10 @@ toNim fsm
             liftUsedArgumentsFromExpression (ApplicationExpression _ ss) = concat $ map liftUsedArgumentsFromExpression ss
             liftUsedArgumentsFromExpression _                            = []
 
-            liftUsedArgumentsFromActions' : List Action -> List Name -> List Name
+            liftUsedArgumentsFromActions' : List Action -> SortedSet Name -> SortedSet Name
             liftUsedArgumentsFromActions' []                             acc = acc
-            liftUsedArgumentsFromActions' ((AssignmentAction _ e) :: xs) acc = liftUsedArgumentsFromActions' xs (acc ++ liftUsedArgumentsFromExpression e)
-            liftUsedArgumentsFromActions' ((OutputAction _ es) :: xs)    acc = liftUsedArgumentsFromActions' xs (foldl (\acc', x => acc' ++ (liftUsedArgumentsFromExpression x)) acc es)
+            liftUsedArgumentsFromActions' ((AssignmentAction _ e) :: xs) acc = liftUsedArgumentsFromActions' xs $ foldl (\a, x => insert x a) acc $ liftUsedArgumentsFromExpression e
+            liftUsedArgumentsFromActions' ((OutputAction _ es) :: xs)    acc = liftUsedArgumentsFromActions' xs $ foldl (\acc', x => foldl (\a, y => insert y a) acc' x) acc $ map (liftUsedArgumentsFromExpression) es
             liftUsedArgumentsFromActions' (_ :: xs)                      acc = liftUsedArgumentsFromActions' xs acc
 
         generateActionsBody : Nat -> String -> List String -> List Name -> String
