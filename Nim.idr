@@ -69,11 +69,7 @@ stateMatrix ss egts ts
 
 actionTags : List1 Transition -> List String
 actionTags trans
-  = SortedSet.toList $ foldl (\acc, x => foldl (\acc', y => actionTags' acc' y) acc x.triggers) empty trans
-  where
-    actionTags' : SortedSet String -> Trigger -> SortedSet String
-    actionTags' acc (MkTrigger _ _ _ Nothing)   = acc
-    actionTags' acc (MkTrigger _ _ _ (Just as)) = insert (foldl (\acc, x => acc ++ (show x)) "" as) acc
+  = nub $ map (foldl (\acc, x => acc ++ (show x)) "") $ actionsOfTransitions trans
 
 transitionActionMatrix : (states: List1 State) -> (eventGuards: List String) -> List1 Transition -> List String -> Matrix (1 + length states) (length eventGuards) Int
 transitionActionMatrix ss egts ts ats
@@ -96,12 +92,6 @@ stateActionMatrix f ss tags
   = calcActions f ss tags $ create (1 + length ss) (1 + length ss) 0
   where
     calcActionVector : {dim : Nat} -> (State -> State -> Maybe (List Action)) -> Nat -> State -> List1 State -> List String -> Matrix dim dim Int -> Matrix dim dim Int
---    calcActionVector f si s []        ss tags m = m
---    calcActionVector f si s (x :: xs) ss tags m = case f s x of
---                                                       Just as => if s == x
---                                                                     then calcActionVector f si s xs ss tags m
---                                                                     else calcActionVector f si s xs ss tags $ updateStateMatrix (Just (si + 1)) (map (+ 1) (Data.List.index x ss)) (map ((+ 1) . cast . natToInteger) (Data.List.index (show as) tags)) m
---                                                       Nothing => calcActionVector f si s xs ss tags m
     calcActionVector f si s ss tags m = foldl (\acc, x => case f s x of
                                                                Just as => if s == x
                                                                              then acc
@@ -145,17 +135,17 @@ toNim fsm
             ads = generateActionDelegates indentDelta pre env aas
             ods = generateOutputDelegates indentDelta pre env oas
             gds = generateGuardDelegates indentDelta pre env ges in
-            List.join "\n" $ filter nonblank [ "type"
-                                        , generateRecords indentDelta rks
-                                        , generateModel indentDelta pre (filter (\(n, _, _) => n /= "state") fsm.model)
-                                        , generateStates indentDelta pre fsm.states
-                                        , ads
-                                        , ods
-                                        , gds
-                                        , generateStateMachine indentDelta pre (0 /= length ads) (0 /= length ods) (0 /= length gds)
-                                        , generateTransitionActionType indentDelta pre fsm.events
-                                        , generateStateActionType indentDelta pre
-                                        ]
+            List.join "\n" $ List.filter nonblank [ "type"
+                                                  , generateRecords indentDelta rks
+                                                  , generateModel indentDelta pre (filter (\(n, _, _) => n /= "state") fsm.model)
+                                                  , generateStates indentDelta pre fsm.states
+                                                  , ads
+                                                  , ods
+                                                  , gds
+                                                  , generateStateMachine indentDelta pre (0 /= length ads) (0 /= length ods) (0 /= length gds)
+                                                  , generateTransitionActionType indentDelta pre fsm.events
+                                                  , generateStateActionType indentDelta pre
+                                                  ]
       where
         generateAttribute : Nat -> Parameter -> String
         generateAttribute idt (n, t, _)
@@ -180,12 +170,12 @@ toNim fsm
         generateStates : Nat -> String -> List1 State -> String
         generateStates idt pre ss
           = List.join "\n" [ (indent idt) ++ pre ++ "State* = enum"
-                           , List1.join "\n" $ map (\(i, x) => generateState (idt + indentDelta) i x) (enumerate ss)
+                           , List1.join ",\n" $ map (\(i, x) => generateState (idt + indentDelta) i x) (enumerate ss)
                            ]
           where
             generateState : Nat -> Nat -> State -> String
             generateState idt idx (MkState n _ _ _)
-              = (indent idt) ++ (camelize (toNimName n)) ++ " = " ++ (show (idx + 1))
+              = (indent idt) ++ ((toNimName . camelize) n) ++ " = " ++ (show (idx + 1))
 
         liftArrowParams : Tipe -> List Tipe -> List Tipe
         liftArrowParams (TArrow a b@(TArrow _ _)) acc = liftArrowParams b (a :: acc)
@@ -266,7 +256,7 @@ toNim fsm
                 ad = if ads then (indent (idt + indentDelta)) ++ "action_delegate*: " ++ pre ++ "ActionDelegate" else ""
                 od = if ods then (indent (idt + indentDelta)) ++ "output_delegate*: " ++ pre ++ "OutputDelegate" else ""
                 gd = if gds then (indent (idt + indentDelta)) ++ "guard_delegate*: " ++ pre ++ "GuardDelegate" else ""
-                body = join "\n" (filter (\x => 0 /= length x) [ad, od, gd]) in
+                body = List.join "\n" (List.filter (\x => 0 /= length x) [ad, od, gd]) in
                 List.join "\n" [head, body]
 
         generateTransitionActionType : Nat -> String -> List1 Event -> String
