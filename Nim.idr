@@ -439,21 +439,11 @@ toNim fsm
                            , (indent indentDelta) ++ "result = " ++ pre ++ "Model(state: " ++ startStateStr ++ ")"
                            ]
 
-
-loadFsm : String -> Either String Fsm
-loadFsm src
-  = do (sexp, _) <- mapError parseErrorToString $ parseSExp src
-       (fsm, _) <- mapError parseErrorToString $ analyse sexp
-       fsm' <- mapError checkersErrorToString $ check fsm defaultCheckingRules
-       pure fsm'
-
 doWork : String -> IO ()
 doWork src
-  = do Right content <- readFile src
+  = do Right fsm <- loadFsmFromFile src
        | Left err => putStrLn $ show err
-       case loadFsm content of
-            Left e => putStrLn e
-            Right fsm => putStrLn $ toNim fsm
+       putStrLn $ toNim fsm
 
 usage : IO ()
 usage
