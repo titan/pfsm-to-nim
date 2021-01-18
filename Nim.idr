@@ -129,10 +129,9 @@ toNim fsm
       = let pre = camelize fsm.name
             env = rootEnv fsm
             rks = liftRecords fsm.model
-            aas = assignmentActions fsm
             oas = outputActions fsm
             ges = nub $ filter applicationExpressionFilter $ flatten $ map expressionsOfTestExpression $ flatten $ map guardsOfTransition $ List1.toList fsm.transitions
-            ads = generateActionDelegates indentDelta pre env aas
+            ads = generateActionDelegates indentDelta pre env fsm.states fsm.transitions
             ods = generateOutputDelegates indentDelta pre env oas
             gds = generateGuardDelegates indentDelta pre env ges in
             List.join "\n" $ List.filter nonblank [ "type"
@@ -177,59 +176,79 @@ toNim fsm
             generateState idt idx (MkState n _ _ _)
               = (indent idt) ++ ((toNimName . camelize) n) ++ " = " ++ (show (idx + 1))
 
-        liftArrowParams : Tipe -> List Tipe -> List Tipe
-        liftArrowParams (TArrow a b@(TArrow _ _)) acc = liftArrowParams b (a :: acc)
-        liftArrowParams (TArrow a b)              acc = b :: (a :: acc)
-        liftArrowParams _                         acc = acc
-
-        fixTypeOfApplicationExpression : SortedMap Expression Tipe -> Maybe Tipe -> Maybe Tipe -> Maybe Tipe
-        fixTypeOfApplicationExpression env (Just ats@(TArrow a b)) (Just rt) = case liftArrowParams ats [] of
-                                                                                    []        => Just (TArrow TUnit rt)
-                                                                                    (x :: xs) => Just (constructTArrow (reverse xs) rt)
-        fixTypeOfApplicationExpression env _                       (Just rt) = Just (TArrow TUnit rt)
-        fixTypeOfApplicationExpression env _                       _         = Nothing
-
-        generateActionDelegates : Nat -> String -> SortedMap Expression Tipe -> List Action -> String
-        generateActionDelegates idt pre env as
-          = let eps = SortedSet.toList $ foldl (\acc, x => applicationExpressionOfAction x acc) SortedSet.empty as
-                fps = SortedMap.toList $ foldl (\acc, x => case x of Just (n, t) => insert n t acc; Nothing => acc) SortedMap.empty $ map (inferTypeOfExpressions env) eps
+        generateActionDelegates : Nat -> String -> SortedMap Expression Tipe -> List1 State -> List1 Transition -> String
+        generateActionDelegates idt pre env states transitions
+          = let ats = actionTypeOfStates env states SortedMap.empty
+                ats' = actionTypeOfTransitions env transitions ats
+                ats'' = SortedMap.toList ats'
                 head = (indent idt) ++ pre ++ "ActionDelegate* = ref object of RootObj"
-                body = join "\n" (map (\(n, t) => (generateActionDelegate (idt + indentDelta) n t)) fps) in
-                if length fps > Z
+                body = join "\n" (map (\(n, t) => (generateActionDelegate (idt + indentDelta) n t)) ats'') in
+                if length ats'' > Z
                    then List.join "\n" [head, body]
                    else ""
           where
             generateActionDelegate: Nat -> Name -> Tipe -> String
-            generateActionDelegate idt n t = (indent idt) ++ (toNimFuncName n) ++ "*: " ++ (toNimType t)
+            generateActionDelegate idt n t
+              = (indent idt) ++ (toNimFuncName n) ++ "*: " ++ (toNimType t)
 
-            applicationExpressionOfAction : Action -> SortedSet (Expression, Expression) -> SortedSet (Expression, Expression)
-            applicationExpressionOfAction (AssignmentAction l e@(ApplicationExpression _ _)) acc = insert (l, e) acc
-            applicationExpressionOfAction _                                                  acc = acc
+            applicationExpressionTypeOfAssigmentAction : SortedMap Expression Tipe -> SortedMap String Tipe -> Action -> SortedMap String Tipe
+            applicationExpressionTypeOfAssigmentAction env acc (AssignmentAction l r@(ApplicationExpression n _)) = insert n (fromMaybe TUnit (fixTypeOfApplicationExpression env (inferType env r) (inferType env l))) acc
+            applicationExpressionTypeOfAssigmentAction env acc _                                                  = acc
 
-            inferTypeOfExpressions : SortedMap Expression Tipe -> (Expression, Expression) -> Maybe (String, Tipe)
-            inferTypeOfExpressions env (l, r@(ApplicationExpression n _)) = Just (n, maybe TUnit id (fixTypeOfApplicationExpression env (inferType env r) (inferType env l)))
-            inferTypeOfExpressions _   _                                  = Nothing
+            applicationExpressionTypeOfOutputAction : SortedMap Expression Tipe -> SortedMap String Tipe -> Action -> SortedMap String Tipe
+            applicationExpressionTypeOfOutputAction env acc (OutputAction (MkPort _ pt) es)
+              = iterateExpression env acc pt es
+              where
+                iterateExpression : SortedMap Expression Tipe -> SortedMap String Tipe -> Tipe -> List Expression -> SortedMap String Tipe
+                iterateExpression env acc TUnit            (e :: _)                              = acc
+                iterateExpression env acc (TArrow src dst) (e@(ApplicationExpression n _) :: es) = iterateExpression env (insert n (fromMaybe TUnit (fixTypeOfApplicationExpression env (inferType env e) (Just src))) acc) dst es
+                iterateExpression env acc (TArrow src dst) (e :: es)                             = iterateExpression env acc dst es
+                iterateExpression env acc _                _                                     = acc
+            applicationExpressionTypeOfOutputAction env acc _
+              = acc
+
+            actionTypeOfStates : SortedMap Expression Tipe -> List1 State -> SortedMap String Tipe -> SortedMap String Tipe
+            actionTypeOfStates env states acc
+              = let actions = flatten $ map liftActionsFromState $ List1.toList states
+                    ats = foldl (applicationExpressionTypeOfAssigmentAction env) acc actions
+                    ats' = foldl (applicationExpressionTypeOfOutputAction env) ats actions in
+                    ats'
+
+            actionTypeOfTransitions : SortedMap Expression Tipe -> List1 Transition -> SortedMap String Tipe -> SortedMap String Tipe
+            actionTypeOfTransitions env transitions acc
+              = foldl (actionTypeOfTransition env) acc transitions
+              where
+                actionTypeOfTrigger : SortedMap Expression Tipe -> SortedMap String Tipe -> Trigger -> SortedMap String Tipe
+                actionTypeOfTrigger env acc (MkTrigger _ (MkEvent _ ps _) _ (Just as))
+                  = let env' = foldl (\acc, (n, t, _) => insert (IdentifyExpression ("@" ++ n)) t acc) env ps
+                        ats = foldl (applicationExpressionTypeOfAssigmentAction env') acc as
+                        ats' = foldl (applicationExpressionTypeOfOutputAction env') ats as in
+                        ats'
+                actionTypeOfTrigger env acc (MkTrigger _ (MkEvent _ ps _) _ Nothing)
+                  = acc
+
+                actionTypeOfTransition : SortedMap Expression Tipe -> SortedMap String Tipe -> Transition -> SortedMap String Tipe
+                actionTypeOfTransition env acc (MkTransition _ _ ts)
+                  = foldl (actionTypeOfTrigger env) acc ts
 
         generateOutputDelegates : Nat -> String -> SortedMap Expression Tipe -> List Action -> String
         generateOutputDelegates idt pre env as
-          = let
-                oes = (SortedMap.toList . (foldl (\acc, x => expressionOfOutputAction x acc) SortedMap.empty)) as
-                fps = map (\(n, t) => (n, TArrow (TRecord (pre ++ "Model") []) t)) $ map (inferTypeOfExpressions env) oes
+          = let oas = filter outputActionFilter as
+                pts = nub $ fromMaybe [] $ liftMaybeList $ map liftPort oas
+--              oes = (SortedMap.toList . (foldl (\acc, x => expressionOfOutputAction x acc) SortedMap.empty)) as
+                fps = map (\(MkPort n t) => (n, TArrow (TRecord (pre ++ "Model") []) t)) pts
                 head = (indent idt) ++ pre ++ "OutputDelegate* = ref object of RootObj"
                 body = join "\n" (map (\(n, t) => (generateOutputDelegate (idt + indentDelta) n t)) fps) in
                 if length fps > 0
                    then List.join "\n" [head, body]
                    else ""
           where
+            liftPort : Action -> Maybe Port
+            liftPort (OutputAction p _) = Just p
+            liftPort _                  = Nothing
+
             generateOutputDelegate : Nat -> Name -> Tipe -> String
             generateOutputDelegate idt n t = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
-
-            expressionOfOutputAction : Action -> SortedMap Name (List Expression) -> SortedMap Name (List Expression)
-            expressionOfOutputAction (OutputAction n es) acc = insert n es acc
-            expressionOfOutputAction _                   acc = acc
-
-            inferTypeOfExpressions : SortedMap Expression Tipe -> (Name, List Expression) -> (Name, Tipe)
-            inferTypeOfExpressions env (n, es) = (n, constructTArrow (reverse (map ((maybe TUnit id ) . (inferType env)) es)) TUnit)
 
         generateGuardDelegates : Nat -> String -> SortedMap Expression Tipe -> List Expression -> String
         generateGuardDelegates idt pre env ges
@@ -347,7 +366,7 @@ toNim fsm
             generateActionsCode' : List String -> List Action -> List String
             generateActionsCode' acc []                             = acc
             generateActionsCode' acc ((AssignmentAction l r) :: xs) = generateActionsCode' (((toNimModelAttribute (show l)) ++ " = " ++ (toNimExpression "fsm.action_delegate" r)) :: acc) xs
-            generateActionsCode' acc ((OutputAction n es) :: xs)    = generateActionsCode' (("fsm.output_delegate." ++ toNimName(n) ++ "(" ++ (List.join ", " (map (toNimExpression "fsm.output_delegate") ((IdentifyExpression "model") :: es))) ++ ")") :: acc) xs
+            generateActionsCode' acc ((OutputAction p es) :: xs)    = generateActionsCode' (("fsm.output_delegate." ++ toNimName(p.name) ++ "(" ++ (List.join ", " (map (toNimExpression "fsm.action_delegate") ((IdentifyExpression "model") :: es))) ++ ")") :: acc) xs
             generateActionsCode' acc (_ :: xs)                      = generateActionsCode' acc xs
 
     generateTransitionActions : String -> List1 State -> List1 Event -> List1 Transition -> String
@@ -442,7 +461,7 @@ toNim fsm
 doWork : String -> IO ()
 doWork src
   = do Right fsm <- loadFsmFromFile src
-       | Left err => putStrLn $ show err
+       | Left err => putStrLn err
        putStrLn $ toNim fsm
 
 usage : IO ()
