@@ -69,7 +69,7 @@ stateMatrix ss egts ts
 
 actionTags : List1 Transition -> List String
 actionTags trans
-  = nub $ map (foldl (\acc, x => acc ++ (show x)) "") $ actionsOfTransitions trans
+  = nub $ map (foldl (\acc, x => acc ++ (show x)) "") $ nub $ actionsOfTransitions trans
 
 transitionActionMatrix : (states: List1 State) -> (eventGuards: List String) -> List1 Transition -> List String -> Matrix (1 + length states) (length eventGuards) Int
 transitionActionMatrix ss egts ts ats
@@ -129,7 +129,7 @@ toNim fsm
       = let pre = camelize fsm.name
             env = rootEnv fsm
             rks = liftRecords fsm.model
-            oas = outputActions fsm
+            oas = liftOutputActions fsm.states fsm.transitions
             ges = nub $ filter applicationExpressionFilter $ flatten $ map expressionsOfTestExpression $ flatten $ map guardsOfTransition $ List1.toList fsm.transitions
             ads = generateActionDelegates indentDelta pre env fsm.states fsm.transitions
             ods = generateOutputDelegates indentDelta pre env oas
@@ -292,8 +292,8 @@ toNim fsm
       = let ss   = fsm.states
             ts   = fsm.transitions
             egts = eventGuardTags ts
-            ents = map show $ actionsOfStates (.onEnter) ss
-            exts = map show $ actionsOfStates (.onExit) ss
+            ents = map show $ nub $ actionsOfStates (.onEnter) ss
+            exts = map show $ nub $ actionsOfStates (.onExit) ss
             ats  = actionTags ts in
             List.join "\n\n" [ generateTransitionStateMatrix ss egts ts
                              , generateTransitionActionMatrix ss egts ts ats
@@ -371,7 +371,7 @@ toNim fsm
 
     generateTransitionActions : String -> List1 State -> List1 Event -> List1 Transition -> String
     generateTransitionActions pre ss es ts
-      = let as = actionsOfTransitions ts
+      = let as = nub $ actionsOfTransitions ts
             params = parametersOfEvents es
             paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model") params
             funcs = map (generateAction pre "transition" paramcodes) (Data.List.enumerate ([] :: as)) in
@@ -379,7 +379,7 @@ toNim fsm
 
     generateStateActions : (State -> Maybe (List Action)) -> String -> String -> List1 State -> String
     generateStateActions f pre funpre ss
-      = let as = actionsOfStates f ss
+      = let as = nub $ actionsOfStates f ss
             funcs = map (generateAction pre funpre ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model")) (Data.List.enumerate ([] :: as)) in
             join "\n" funcs
 
