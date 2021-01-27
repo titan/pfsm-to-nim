@@ -22,6 +22,11 @@ import Pfsm.Parser
 indentDelta : Nat
 indentDelta = 2
 
+record AppConfig where
+  constructor MkAppConfig
+  src : String
+  ignoreStateAction: Bool
+
 eventWithGuards : List Trigger -> List (Event, List TestExpression)
 eventWithGuards
   = eventWithGuards' empty
@@ -106,13 +111,13 @@ intMatrixToNim {r} {c} f (MkMatrix xs) = Data.Vect.join ",\n" (map (\x => (inden
 
 %hide Data.Vect.(::)
 
-toNim : Fsm -> String
-toNim fsm
+toNim : AppConfig -> Fsm -> String
+toNim conf fsm
   = List.join "\n\n" [ generateImports
                      , generateTypes fsm
-                     , generateActions fsm
-                     , generateMatrixs fsm
-                     , generateInternalExec fsm
+                     , generateActions conf fsm
+                     , generateMatrixs conf fsm
+                     , generateInternalExec conf fsm
                      , generateEvents fsm
                      , generateInitModel fsm
                      ]
@@ -287,19 +292,23 @@ toNim fsm
         generateStateActionType : Nat -> String -> String
         generateStateActionType idt pre = (indent idt) ++ "StateActionFunc = proc (fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model): " ++ pre ++ "Model"
 
-    generateMatrixs : Fsm -> String
-    generateMatrixs fsm
+    generateMatrixs : AppConfig -> Fsm -> String
+    generateMatrixs conf fsm
       = let ss   = fsm.states
             ts   = fsm.transitions
             egts = eventGuardTags ts
             ents = map show $ nub $ actionsOfStates (.onEnter) ss
             exts = map show $ nub $ actionsOfStates (.onExit) ss
             ats  = actionTags ts in
-            List.join "\n\n" [ generateTransitionStateMatrix ss egts ts
-                             , generateTransitionActionMatrix ss egts ts ats
-                             , generateStateOnEnterMatrix ss ents
-                             , generateStateOnExitMatrix ss exts
-                             ]
+            join "\n\n" $ List.filter nonblank [ generateTransitionStateMatrix ss egts ts
+                                               , generateTransitionActionMatrix ss egts ts ats
+                                               , if conf.ignoreStateAction
+                                                    then ""
+                                                    else generateStateOnEnterMatrix ss ents
+                                               , if conf.ignoreStateAction
+                                                    then ""
+                                                    else generateStateOnExitMatrix ss exts
+                                               ]
       where
 
         generateTransitionStateMatrix : List1 State -> List String -> List1 Transition -> String
@@ -383,16 +392,20 @@ toNim fsm
             funcs = map (generateAction pre funpre ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model")) (Data.List.enumerate ([] :: as)) in
             join "\n" funcs
 
-    generateActions : Fsm -> String
-    generateActions fsm
+    generateActions : AppConfig -> Fsm -> String
+    generateActions conf fsm
       = let pre = camelize fsm.name
             ss  = fsm.states
             es  = fsm.events
             ts  = fsm.transitions in
-            List.join "\n" [ generateTransitionActions pre ss es ts
-                           , generateStateActions (.onEnter) pre "on_enter" ss
-                           , generateStateActions (.onExit) pre "on_exit" ss
-                           ]
+            join "\n" $ List.filter nonblank [ generateTransitionActions pre ss es ts
+                                             , if conf.ignoreStateAction
+                                                  then ""
+                                                  else generateStateActions (.onEnter) pre "on_enter" ss
+                                             , if conf.ignoreStateAction
+                                                  then ""
+                                                  else generateStateActions (.onExit) pre "on_exit" ss
+                                             ]
 
     generateEvents : Fsm -> String
     generateEvents fsm
@@ -404,8 +417,8 @@ toNim fsm
             join "\n\n" $ map (\(e, gs) => generateEvent pre e gs egts params) $ eventWithGuards ts
       where
         generateEventBody : Nat -> List String -> Event -> List TestExpression -> String
-        generateEventBody idt egts e []           = (indent idt) ++ "let idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index (show e) egts))
-        generateEventBody idt egts e gs@(x :: xs) = (indent idt) ++ "var idx = 0\n" ++ (((join "\n") . reverse) $ generateEventBody' idt egts e gs True [])
+        generateEventBody idt egts e [] = (indent idt) ++ "let idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index (show e) egts))
+        generateEventBody idt egts e gs = (indent idt) ++ "var idx = 0\n" ++ (((join "\n") . reverse) $ generateEventBody' idt egts e (reverse gs) True [])
           where
             generateEventBody' : Nat -> List String -> Event -> List TestExpression -> Bool -> List String -> List String
             generateEventBody' idt egts e []        _       acc = ((indent idt) ++ "else:\n" ++ (indent (idt + indentDelta)) ++ "idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index (show e) egts))) :: acc
@@ -430,23 +443,29 @@ toNim fsm
                                                                then generateArguments eps xs $ ("some(" ++ (toNimName n) ++ ")") :: acc
                                                                else generateArguments eps xs $ ("none(" ++ (toNimType t) ++ ")") :: acc
 
-    generateInternalExec : Fsm -> String
-    generateInternalExec fsm
+    generateInternalExec : AppConfig -> Fsm -> String
+    generateInternalExec conf fsm
       = let pre = camelize fsm.name
             statelen = length fsm.states
             es  = fsm.events
             params = parametersOfEvents es
             paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]") ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, idx: int") params
-            argcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt") (the String "fsm, model1") params in
+            argcodes = List.join ", " ("fsm" :: (if conf.ignoreStateAction then "model" else "model1") :: (map (\(n, _, _) => n ++ "_opt") params)) in
             List.join "\n" [ "proc exec(" ++ paramcodes ++ "): " ++ pre ++ "Model ="
                            , (indent indentDelta) ++ "let"
                            , (indent (indentDelta * 2)) ++ "oldstate = model.state"
                            , (indent (indentDelta * 2)) ++ "newstate = model.state + transition_states[idx]"
-                           , (indent (indentDelta * 2)) ++ "model1 = on_exit_actions[oldstate * " ++ (show (statelen + 1)) ++ " + newstate](fsm, model)"
-                           , (indent (indentDelta * 2)) ++ "model2 = transition_actions[idx](" ++ argcodes ++ ")"
-                           , (indent (indentDelta * 2)) ++ "model3 = on_enter_actions[oldstate * " ++ (show (statelen + 1)) ++ " + newstate](fsm, model2)"
-                           , (indent indentDelta) ++ "model3.state = newstate"
-                           , (indent indentDelta) ++ "result = model3"
+                           , if conf.ignoreStateAction
+                                then List.join "\n" [ (indent (indentDelta * 2)) ++ "model1 = transition_actions[idx](" ++ argcodes ++ ")"
+                                                    , (indent indentDelta) ++ "model1.state = newstate"
+                                                    , (indent indentDelta) ++ "result = model1"
+                                                    ]
+                                else List.join "\n" [ (indent (indentDelta * 2)) ++ "model1 = on_exit_actions[oldstate * " ++ (show (statelen + 1)) ++ " + newstate](fsm, model)"
+                                                    , (indent (indentDelta * 2)) ++ "model2 = transition_actions[idx](" ++ argcodes ++ ")"
+                                                    , (indent (indentDelta * 2)) ++ "model3 = on_enter_actions[oldstate * " ++ (show (statelen + 1)) ++ " + newstate](fsm, model2)"
+                                                    , (indent indentDelta) ++ "model3.state = newstate"
+                                                    , (indent indentDelta) ++ "result = model3"
+                                                    ]
                            ]
 
     generateInitModel : Fsm -> String
@@ -458,20 +477,35 @@ toNim fsm
                            , (indent indentDelta) ++ "result = " ++ pre ++ "Model(state: " ++ startStateStr ++ ")"
                            ]
 
-doWork : String -> IO ()
-doWork src
-  = do Right fsm <- loadFsmFromFile src
+doWork : AppConfig -> IO ()
+doWork conf
+  = do Right fsm <- loadFsmFromFile conf.src
        | Left err => putStrLn err
-       putStrLn $ toNim fsm
+       putStrLn $ toNim conf fsm
 
-usage : IO ()
+parseArgs : List String -> Maybe AppConfig
+parseArgs
+  = parseArgs' Nothing False
+  where
+    parseArgs' : Maybe String -> Bool -> List String -> Maybe AppConfig
+    parseArgs' Nothing    _                 []                              = Nothing
+    parseArgs' (Just src) ignoreStateAction []                              = Just (MkAppConfig src ignoreStateAction)
+    parseArgs' src        _                 ("--ignore-state-action" :: xs) = parseArgs' src True xs
+    parseArgs' _          ignoreStateAction (x :: xs)                       = parseArgs' (Just x) ignoreStateAction xs
+
+usage : String
 usage
-  = putStrLn "Usage: pfsm-to-nim <src>"
+  = List.join "\n" [ "Usage: pfsm-to-nim [options] <src>"
+                   , ""
+                   , "Options:"
+                   , "  --ignore-state-action    Do not generate actions of states.[default: false]."
+                   ]
 
 main : IO ()
 main
-  = do
-    args <- getArgs
-    case args of
-         x0 :: x1 :: [] => doWork x1
-         _ => usage
+  = do args <- getArgs
+       case tail' args of
+            Nothing => putStrLn usage
+            Just args' => case parseArgs args' of
+                               Just conf => doWork conf
+                               Nothing => putStrLn usage
