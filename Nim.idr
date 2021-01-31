@@ -27,12 +27,42 @@ record AppConfig where
   src : String
   ignoreStateAction: Bool
 
+calculateScoreOfExpression : Expression -> Nat
+calculateScoreOfExpression (ApplicationExpression _ _)  = 1
+calculateScoreOfExpression (BooleanExpression _)        = 0
+calculateScoreOfExpression (IdentifyExpression _)       = 0
+calculateScoreOfExpression (IntegerLiteralExpression _) = 0
+calculateScoreOfExpression (RealLiteralExpression _)    = 0
+calculateScoreOfExpression (CharLiteralExpression _)    = 0
+calculateScoreOfExpression (StringLiteralExpression _)  = 0
+
+calculateScoreOfTestExpression : TestExpression -> Nat
+calculateScoreOfTestExpression (PrimitiveTestExpression e)
+  = calculateScoreOfExpression e
+calculateScoreOfTestExpression (BinaryTestExpression _ te1 te2)
+  = let s1 = calculateScoreOfTestExpression te1
+        s2 = calculateScoreOfTestExpression te2 in
+        s1 + s2 + 1
+calculateScoreOfTestExpression (UnaryTestExpression _ te)
+  = let s = calculateScoreOfTestExpression te in
+        s + 1
+calculateScoreOfTestExpression (CompareExpression _ e1 e2)
+  = let s1 = calculateScoreOfExpression e1
+        s2 = calculateScoreOfExpression e2 in
+        s1 + s2
+
+compareTestExpression : TestExpression -> TestExpression -> Ordering
+compareTestExpression a b
+  = let a' = calculateScoreOfTestExpression a
+        b' = calculateScoreOfTestExpression b in
+        compare a' b'
+
 eventWithGuards : List Trigger -> List (Event, List TestExpression)
 eventWithGuards
   = eventWithGuards' empty
   where
     eventWithGuards' : SortedMap Event (List TestExpression) -> List Trigger -> List (Event, List TestExpression)
-    eventWithGuards' acc []                                 = toList acc
+    eventWithGuards' acc []                                 = map (\(e, gs) => (e, sortBy compareTestExpression gs)) (the (List (Event, List TestExpression)) (toList acc))
     eventWithGuards' acc ((MkTrigger _ e (Just g) _) :: ts) = case lookup e acc of
                                                                    Just gs => eventWithGuards' (insert e (nub (g :: gs)) acc) ts
                                                                    Nothing => eventWithGuards' (insert e [g] acc) ts
@@ -418,7 +448,7 @@ toNim conf fsm
       where
         generateEventBody : Nat -> List String -> Event -> List TestExpression -> String
         generateEventBody idt egts e [] = (indent idt) ++ "let idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index (show e) egts))
-        generateEventBody idt egts e gs = (indent idt) ++ "var idx = 0\n" ++ (((join "\n") . reverse) $ generateEventBody' idt egts e (reverse gs) True [])
+        generateEventBody idt egts e gs = (indent idt) ++ "var idx = 0\n" ++ (((join "\n") . reverse) $ generateEventBody' idt egts e (reverse (sortBy compareTestExpression gs)) True [])
           where
             generateEventBody' : Nat -> List String -> Event -> List TestExpression -> Bool -> List String -> List String
             generateEventBody' idt egts e []        _       acc = ((indent idt) ++ "else:\n" ++ (indent (idt + indentDelta)) ++ "idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index (show e) egts))) :: acc
