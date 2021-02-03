@@ -42,7 +42,7 @@ calculateScoreOfTestExpression (PrimitiveTestExpression e)
 calculateScoreOfTestExpression (BinaryTestExpression _ te1 te2)
   = let s1 = calculateScoreOfTestExpression te1
         s2 = calculateScoreOfTestExpression te2 in
-        s1 + s2 + 1
+        s1 + s2 + 2
 calculateScoreOfTestExpression (UnaryTestExpression _ te)
   = let s = calculateScoreOfTestExpression te in
         s + 1
@@ -144,7 +144,7 @@ intMatrixToNim {r} {c} f (MkMatrix xs) = Data.Vect.join ",\n" (map (\x => (inden
 toNim : AppConfig -> Fsm -> String
 toNim conf fsm
   = List.join "\n\n" [ generateImports
-                     , generateTypes fsm
+                     , generateTypes conf fsm
                      , generateActions conf fsm
                      , generateMatrixs conf fsm
                      , generateInternalExec conf fsm
@@ -159,8 +159,8 @@ toNim conf fsm
                                             , "tables"
                                             ]
 
-    generateTypes : Fsm -> String
-    generateTypes fsm
+    generateTypes : AppConfig -> Fsm -> String
+    generateTypes conf fsm
       = let pre = camelize fsm.name
             env = rootEnv fsm
             rks = liftRecords fsm.model
@@ -178,7 +178,9 @@ toNim conf fsm
                                                   , gds
                                                   , generateStateMachine indentDelta pre (0 /= length ads) (0 /= length ods) (0 /= length gds)
                                                   , generateTransitionActionType indentDelta pre fsm.events
-                                                  , generateStateActionType indentDelta pre
+                                                  , if conf.ignoreStateAction
+                                                       then ""
+                                                       else generateStateActionType indentDelta pre
                                                   ]
       where
         generateAttribute : Nat -> Parameter -> String
@@ -461,7 +463,7 @@ toNim conf fsm
           = let eparams = e.params
                 paramcodes = List.join ", " $ map (\(n, t, _) => (toNimName n) ++ ": " ++ (toNimType t)) (("fsm", TRecord (pre ++ "StateMachine") [], Nothing) :: (("model", TRecord (pre ++ "Model") [], Nothing) :: eparams))
                 args = generateArguments eparams ps []
-                signature = "proc " ++ (toNimName e.name) ++ "*" ++ "(" ++ paramcodes ++ "): " ++ pre ++ "Model ="
+                signature = "proc " ++ (toNimName e.name) ++ "*" ++ "(" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.} ="
                 body = List.join "\n" [ generateEventBody indentDelta egts e gs
                                       , (indent indentDelta) ++ (foldl (\acc, x => acc ++ ", " ++ x) "result = exec(fsm, model, idx" args) ++ ")"
                                       ] in
@@ -481,7 +483,7 @@ toNim conf fsm
             params = parametersOfEvents es
             paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]") ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, idx: int") params
             argcodes = List.join ", " ("fsm" :: (if conf.ignoreStateAction then "model" else "model1") :: (map (\(n, _, _) => n ++ "_opt") params)) in
-            List.join "\n" [ "proc exec(" ++ paramcodes ++ "): " ++ pre ++ "Model ="
+            List.join "\n" [ "proc exec(" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.} ="
                            , (indent indentDelta) ++ "let"
                            , (indent (indentDelta * 2)) ++ "oldstate = model.state"
                            , (indent (indentDelta * 2)) ++ "newstate = model.state + transition_states[idx]"
