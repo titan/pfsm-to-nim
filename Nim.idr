@@ -87,29 +87,35 @@ updateStateMatrix {r} {c} (Just row) (Just col) (Just v) m = let rowMaybe = natT
                                                                       _ => m
 updateStateMatrix         _          _          _        m = m
 
-stateMatrix : (states: List1 State) -> (eventGuards: List String) -> List1 Transition -> Matrix (1 + (length states)) (length eventGuards) Int
+stateMatrix : (states: List1 State) -> (eventGuards: List String) -> List1 Transition -> Matrix (length states) (length eventGuards) Int
 stateMatrix ss egts ts
-  = let matrix = create (1 + (length ss)) (length egts) (the Int 0) in
-        foldl (\acc, x => let s = List1.index x.src ss
-                              d = List1.index x.dst ss
-                              v = Just (-) <*> map cast d <*> map cast s in
-                              foldl (\acc', y => updateMatrix egts s v y acc') acc x.triggers
-                              ) matrix ts
+  = let matrix = create (length ss) (length egts) (the Int 0)
+        matrix' = foldl (\acc, x =>
+                    case List1.index x.src ss of
+                         Just s => case natToFin s (length ss) of
+                                        Just s' => replaceRow s' (Vect.replicate (length egts) (cast s)) acc
+                                        Nothing => acc
+                         Nothing => acc) matrix ts in
+        foldl (\acc, x =>
+          let s = List1.index x.src ss
+              d = List1.index x.dst ss
+              v = map cast d in
+              foldl (\acc', y => updateMatrix egts s v y acc') acc x.triggers) matrix' ts
   where
     updateMatrix : {row: Nat} -> (eventGuards: List String) -> Maybe Nat -> Maybe Int -> Trigger -> Matrix row (length eventGuards) Int -> Matrix row (length eventGuards) Int
     updateMatrix egts s v (MkTrigger _ evt Nothing _)  m = let e = Data.List.index (show evt) egts in
-                                                               updateStateMatrix (map (+ 1) s) e v m
+                                                               updateStateMatrix s e v m
     updateMatrix egts s v (MkTrigger _ evt (Just g) _) m = let e = Data.List.index ((show evt) ++ show g) egts in
-                                                               updateStateMatrix (map (+ 1) s) e v m
+                                                               updateStateMatrix s e v m
 
 actionTags : List1 Transition -> List String
 actionTags trans
   = nub $ map (foldl (\acc, x => acc ++ (show x)) "") $ nub $ actionsOfTransitions trans
 
-transitionActionMatrix : (states: List1 State) -> (eventGuards: List String) -> List1 Transition -> List String -> Matrix (1 + length states) (length eventGuards) Int
+transitionActionMatrix : (states: List1 State) -> (eventGuards: List String) -> List1 Transition -> List String -> Matrix (length states) (length eventGuards) Int
 transitionActionMatrix ss egts ts ats
-  = let matrix = create (1 + (length ss)) (length egts) (the Int 0) in
-        foldl (\acc, x => let s = map (+ 1) $ List1.index x.src ss in
+  = let matrix = create (length ss) (length egts) (the Int 0) in
+        foldl (\acc, x => let s = List1.index x.src ss in
                               foldl (\acc', y => calcAction egts ats s y acc') acc x.triggers
                               ) matrix ts
   where
@@ -122,18 +128,20 @@ transitionActionMatrix ss egts ts ats
                                                                      v = map ((+ 1) . cast . natToInteger) $ Data.List.index (foldl (\acc, x => acc ++ (show x)) "" as) ats in
                                                                      updateStateMatrix s c v m
 
-stateActionMatrix : (State -> State -> Maybe (List Action)) -> (states : List1 State) -> List String -> Matrix (1 + length states) (1 + length states) Int
+stateActionMatrix : (State -> State -> Maybe (List Action)) -> (states : List1 State) -> List String -> Matrix (length states) (length states) Int
 stateActionMatrix f ss tags
-  = calcActions f ss tags $ create (1 + length ss) (1 + length ss) 0
+  = calcActions f ss tags $ create (length ss) (length ss) 0
   where
     calcActionVector : {dim : Nat} -> (State -> State -> Maybe (List Action)) -> Nat -> State -> List1 State -> List String -> Matrix dim dim Int -> Matrix dim dim Int
-    calcActionVector f si s ss tags m = foldl (\acc, x => case f s x of
-                                                               Just as => if s == x
-                                                                             then acc
-                                                                             else updateStateMatrix (Just (si + 1)) (map (+ 1) (List1.index x ss)) (map ((+ 1) . cast . natToInteger) (Data.List.index (show as) tags)) acc
-                                                               Nothing => acc) m ss
+    calcActionVector f si s ss tags m
+      = foldl (\acc, x =>
+          case f s x of
+               Just as => if s == x
+                             then acc
+                             else updateStateMatrix (Just si) (List1.index x ss) (map ((+ 1) . cast . natToInteger) (Data.List.index (show as) tags)) acc
+               Nothing => acc) m ss
 
-    calcActions : (State -> State -> Maybe (List Action)) -> (states: List1 State) -> List String -> Matrix (1 + length states) (1 + length states) Int -> Matrix (1 + length states) (1 + length states) Int
+    calcActions : (State -> State -> Maybe (List Action)) -> (states: List1 State) -> List String -> Matrix (length states) (length states) Int -> Matrix (length states) (length states) Int
     calcActions f states tags m = foldl (\acc, (i, s) => calcActionVector f i s states tags acc) m (List1.enumerate states)
 
 intMatrixToNim : {r, c: Nat} -> (Int -> String) -> Matrix r c Int -> String
@@ -211,7 +219,7 @@ toNim conf fsm
           where
             generateState : Nat -> Nat -> State -> String
             generateState idt idx (MkState n _ _ _)
-              = (indent idt) ++ ((toNimName . camelize) n) ++ " = " ++ (show (idx + 1))
+              = (indent idt) ++ ((toNimName . camelize) n) ++ " = " ++ (show idx)
 
         generateActionDelegates : Nat -> String -> SortedMap Expression Tipe -> List1 State -> List1 Transition -> String
         generateActionDelegates idt pre env states transitions
@@ -226,7 +234,7 @@ toNim conf fsm
           where
             generateActionDelegate: Nat -> Name -> Tipe -> String
             generateActionDelegate idt n t
-              = (indent idt) ++ (toNimFuncName n) ++ "*: " ++ (toNimType t)
+              = (indent idt) ++ (toNimFuncName n) ++ "*: " ++ (toNimType t) ++ " {.gcsafe.}"
 
             applicationExpressionTypeOfAssigmentAction : SortedMap Expression Tipe -> SortedMap String Tipe -> Action -> SortedMap String Tipe
             applicationExpressionTypeOfAssigmentAction env acc (AssignmentAction l r@(ApplicationExpression n _)) = insert n (fromMaybe TUnit (fixTypeOfApplicationExpression env (inferType env r) (inferType env l))) acc
@@ -285,7 +293,7 @@ toNim conf fsm
             liftPort _                  = Nothing
 
             generateOutputDelegate : Nat -> Name -> Tipe -> String
-            generateOutputDelegate idt n t = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
+            generateOutputDelegate idt n t = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t) ++ " {.gcsafe.}"
 
         generateGuardDelegates : Nat -> String -> SortedMap Expression Tipe -> List Expression -> String
         generateGuardDelegates idt pre env ges
@@ -297,7 +305,7 @@ toNim conf fsm
                    else ""
           where
             generateGuardDelegate : Nat -> Name -> Tipe -> String
-            generateGuardDelegate idt n t = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
+            generateGuardDelegate idt n t = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t) ++ " {.gcsafe.}"
 
             inferTypeOfExpressions : SortedMap Expression Tipe -> Tipe -> Expression -> Maybe (Name, Tipe)
             inferTypeOfExpressions env firstArgType r@(ApplicationExpression n _) = case fixTypeOfApplicationExpression env (inferType env r) (Just (TPrimType PTBool)) of
@@ -318,11 +326,11 @@ toNim conf fsm
         generateTransitionActionType : Nat -> String -> List1 Event -> String
         generateTransitionActionType idt pre es
           = let params = parametersOfEvents es
-                paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model") params in
-                (indent idt) ++ "TransitionActionFunc = proc (" ++ paramcodes ++ "): " ++ pre ++ "Model"
+                paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, srcstate: int, dststate: int") params in
+                (indent idt) ++ "TransitionActionFunc = proc (" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.}"
 
         generateStateActionType : Nat -> String -> String
-        generateStateActionType idt pre = (indent idt) ++ "StateActionFunc = proc (fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model): " ++ pre ++ "Model"
+        generateStateActionType idt pre = (indent idt) ++ "StateActionFunc = proc (fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, state: int): " ++ pre ++ "Model {.gcsafe.}"
 
     generateMatrixs : AppConfig -> Fsm -> String
     generateMatrixs conf fsm
@@ -347,29 +355,29 @@ toNim conf fsm
         generateTransitionStateMatrix ss egts ts
           = let matrix = stateMatrix ss egts ts
                 code = intMatrixToNim show matrix in
-                "const transition_states: array[0.." ++ (show (cast (((length ss) + 1) * (length egts)) - 1)) ++ ", int] = [\n" ++ code ++ "\n]"
+                "const transition_states: array[0.." ++ (show (cast ((length ss) * (length egts)) - 1)) ++ ", int] = [\n" ++ code ++ "\n]"
 
         generateTransitionActionMatrix : List1 State -> List String -> List1 Transition -> List String -> String
         generateTransitionActionMatrix ss egts ts ats
           = let matrix = transitionActionMatrix ss egts ts ats
                 code = intMatrixToNim (\x => "TransitionActionFunc(transition_action" ++ (show x) ++ ")") matrix in
-                "const transition_actions: array[0.." ++ (show (cast (((length ss) + 1) * (length egts)) - 1)) ++ ", TransitionActionFunc] = [\n" ++ code ++ "\n]"
+                "const transition_actions: array[0.." ++ (show (cast ((length ss) * (length egts)) - 1)) ++ ", TransitionActionFunc] = [\n" ++ code ++ "\n]"
 
         generateStateOnEnterMatrix : List1 State -> List String -> String
         generateStateOnEnterMatrix ss tags
           = let matrix = stateActionMatrix (\s, d => d.onEnter) ss tags
                 code = intMatrixToNim (\x => "StateActionFunc(on_enter_action" ++ (show x) ++ ")") matrix in
-                "const on_enter_actions: array[0.." ++ (show (cast (((length ss) + 1) * ((length ss) + 1)) - 1)) ++ ", StateActionFunc] = [\n" ++ code ++ "\n]"
+                "const on_enter_actions: array[0.." ++ (show (cast ((length ss) * (length ss)) - 1)) ++ ", StateActionFunc] = [\n" ++ code ++ "\n]"
 
         generateStateOnExitMatrix : List1 State -> List String -> String
         generateStateOnExitMatrix ss tags
           = let matrix = stateActionMatrix (\s, d => s.onExit) ss tags
                 code = intMatrixToNim (\x => "StateActionFunc(on_exit_action" ++ (show x) ++ ")") matrix in
-                "const on_exit_actions: array[0.." ++ (show (cast (((length ss) + 1) * ((length ss) + 1)) - 1)) ++ ", StateActionFunc] = [\n" ++ code ++ "\n]"
+                "const on_exit_actions: array[0.." ++ (show (cast ((length ss) * (length ss)) - 1)) ++ ", StateActionFunc] = [\n" ++ code ++ "\n]"
 
     generateAction : String -> String -> String -> (Nat, List Action) -> String
     generateAction pre funpre paramcodes (idx, acts)
-      = let signature = "proc " ++ funpre ++ "_action" ++ (show idx) ++ "(" ++ paramcodes ++ "): " ++ pre ++ "Model ="
+      = let signature = "proc " ++ funpre ++ "_action" ++ (show idx) ++ "(" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.} ="
             usedArgs = liftUsedArgumentsFromActions acts
             actionsCode = generateActionsCode acts
             body = generateActionsBody indentDelta pre (reverse actionsCode) usedArgs in
@@ -414,14 +422,14 @@ toNim conf fsm
     generateTransitionActions pre ss es ts
       = let as = nub $ actionsOfTransitions ts
             params = parametersOfEvents es
-            paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model") params
+            paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, srcstate: int, dststate: int") params
             funcs = map (generateAction pre "transition" paramcodes) (Data.List.enumerate ([] :: as)) in
             join "\n" funcs
 
     generateStateActions : (State -> Maybe (List Action)) -> String -> String -> List1 State -> String
     generateStateActions f pre funpre ss
       = let as = nub $ actionsOfStates f ss
-            funcs = map (generateAction pre funpre ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model")) (Data.List.enumerate ([] :: as)) in
+            funcs = map (generateAction pre funpre ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, state: int")) (Data.List.enumerate ([] :: as)) in
             join "\n" funcs
 
     generateActions : AppConfig -> Fsm -> String
@@ -461,7 +469,7 @@ toNim conf fsm
         generateEvent : String -> Event -> List TestExpression -> List String -> List Parameter -> String
         generateEvent pre e gs egts ps
           = let eparams = e.params
-                paramcodes = List.join ", " $ map (\(n, t, _) => (toNimName n) ++ ": " ++ (toNimType t)) (("fsm", TRecord (pre ++ "StateMachine") [], Nothing) :: (("model", TRecord (pre ++ "Model") [], Nothing) :: eparams))
+                paramcodes = List.join ", " $ map (\(n, t, _) => (toNimName n) ++ ": " ++ (toNimType t)) (("fsm", TRecord (pre ++ "StateMachine") [], Nothing) :: ("model", TRecord (pre ++ "Model") [], Nothing) :: eparams)
                 args = generateArguments eparams ps []
                 signature = "proc " ++ (toNimName e.name) ++ "*" ++ "(" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.} ="
                 body = List.join "\n" [ generateEventBody indentDelta egts e gs
@@ -482,20 +490,20 @@ toNim conf fsm
             es  = fsm.events
             params = parametersOfEvents es
             paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]") ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, idx: int") params
-            argcodes = List.join ", " ("fsm" :: (if conf.ignoreStateAction then "model" else "model1") :: (map (\(n, _, _) => n ++ "_opt") params)) in
+            argcodes = List.join ", " ("fsm" :: (if conf.ignoreStateAction then "model" else "model1") :: "srcstate" :: "dststate" :: (map (\(n, _, _) => n ++ "_opt") params)) in
             List.join "\n" [ "proc exec(" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.} ="
                            , (indent indentDelta) ++ "let"
-                           , (indent (indentDelta * 2)) ++ "oldstate = model.state"
-                           , (indent (indentDelta * 2)) ++ "newstate = model.state + transition_states[idx]"
+                           , (indent (indentDelta * 2)) ++ "srcstate = model.state"
+                           , (indent (indentDelta * 2)) ++ "dststate = transition_states[idx]"
                            , if conf.ignoreStateAction
                                 then List.join "\n" [ (indent (indentDelta * 2)) ++ "model1 = transition_actions[idx](" ++ argcodes ++ ")"
-                                                    , (indent indentDelta) ++ "model1.state = newstate"
+                                                    , (indent indentDelta) ++ "model1.state = dststate"
                                                     , (indent indentDelta) ++ "result = model1"
                                                     ]
-                                else List.join "\n" [ (indent (indentDelta * 2)) ++ "model1 = on_exit_actions[oldstate * " ++ (show (statelen + 1)) ++ " + newstate](fsm, model)"
+                                else List.join "\n" [ (indent (indentDelta * 2)) ++ "model1 = on_exit_actions[srcstate * " ++ (show statelen) ++ " + dststate](fsm, model, srcstate)"
                                                     , (indent (indentDelta * 2)) ++ "model2 = transition_actions[idx](" ++ argcodes ++ ")"
-                                                    , (indent (indentDelta * 2)) ++ "model3 = on_enter_actions[oldstate * " ++ (show (statelen + 1)) ++ " + newstate](fsm, model2)"
-                                                    , (indent indentDelta) ++ "model3.state = newstate"
+                                                    , (indent (indentDelta * 2)) ++ "model3 = on_enter_actions[srcstate * " ++ (show statelen) ++ " + dststate](fsm, model2, dststate)"
+                                                    , (indent indentDelta) ++ "model3.state = dststate"
                                                     , (indent indentDelta) ++ "result = model3"
                                                     ]
                            ]
