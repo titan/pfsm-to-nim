@@ -156,10 +156,14 @@ toNim conf fsm
                      , generateActions conf fsm
                      , generateMatrixs conf fsm
                      , generateInternalExec conf fsm
-                     , generateEvents fsm
+                     , generateEvents conf fsm
                      , generateInitModel fsm
                      ]
   where
+    returnType : Tipe -> Tipe
+    returnType (TArrow _ t) = returnType t
+    returnType t            = t
+
     generateImports : String
     generateImports
       = List.join "\n" $ map ("import " ++) [ "options"
@@ -176,6 +180,9 @@ toNim conf fsm
             ges = nub $ filter applicationExpressionFilter $ flatten $ map expressionsOfTestExpression $ flatten $ map guardsOfTransition $ List1.forget fsm.transitions
             ads = generateActionDelegates indentDelta pre env fsm.states fsm.transitions
             ods = generateOutputDelegates indentDelta pre env oas
+            pcds = if conf.ignoreStateAction
+                      then ""
+                      else generatePortCallbackDelegates indentDelta pre fsm.ports
             gds = generateGuardDelegates indentDelta pre env ges in
             List.join "\n" $ List.filter nonblank [ "type"
                                                   , generateRecords indentDelta rks
@@ -184,8 +191,9 @@ toNim conf fsm
                                                   , ads
                                                   , ods
                                                   , gds
-                                                  , generateStateMachine indentDelta pre (0 /= length ads) (0 /= length ods) (0 /= length gds)
-                                                  , generateTransitionActionType indentDelta pre fsm.events
+                                                  , pcds
+                                                  , generateStateMachine indentDelta pre (0 /= length ads) (0 /= length ods) (0 /= length gds) (0 /= length pcds)
+                                                  , generateTransitionActionType indentDelta pre conf.ignoreStateAction fsm.events fsm.ports
                                                   , if conf.ignoreStateAction
                                                        then ""
                                                        else generateStateActionType indentDelta pre
@@ -314,20 +322,45 @@ toNim conf fsm
                                                                                          Nothing => Nothing
             inferTypeOfExpressions _   _            _                             = Nothing
 
-        generateStateMachine : Nat -> String -> Bool -> Bool -> Bool -> String
-        generateStateMachine idt pre ads ods gds
+        generatePortCallbackDelegates : Nat -> String -> List Port -> String
+        generatePortCallbackDelegates idt pre ports
+          = let head = (indent idt) ++ pre ++ "PortCallback* = ref object of RootObj"
+                ps = map (generatePortCallbackDelegate (idt + indentDelta)) ports
+                body = List.join "\n" ps in
+                if length ps > Z
+                   then List.join "\n" [ head, body ]
+                   else ""
+          where
+            generatePortCallbackDelegate : Nat -> Port -> String
+            generatePortCallbackDelegate idt (MkPort pname t)
+              = let t' = returnType t in
+                    if t' == TUnit
+                       then (indent idt) ++ (toNimName pname) ++ "*: proc (): void {.gcsafe.}"
+                       else (indent idt) ++ (toNimName pname) ++ "*: proc (a0: " ++ (toNimType t') ++ "): void {.gcsafe.}"
+
+
+        generateStateMachine : Nat -> String -> Bool -> Bool -> Bool -> Bool -> String
+        generateStateMachine idt pre ads ods gds pcds
           = let head = (indent idt) ++ pre ++ "StateMachine* = ref object of RootObj"
                 ad = if ads then (indent (idt + indentDelta)) ++ "action_delegate*: " ++ pre ++ "ActionDelegate" else ""
                 od = if ods then (indent (idt + indentDelta)) ++ "output_delegate*: " ++ pre ++ "OutputDelegate" else ""
                 gd = if gds then (indent (idt + indentDelta)) ++ "guard_delegate*: " ++ pre ++ "GuardDelegate" else ""
-                body = List.join "\n" (List.filter (\x => 0 /= length x) [ad, od, gd]) in
+                pcd = if pcds then (indent (idt + indentDelta)) ++ "port_callback_delegate*: " ++ pre ++ "PortCallbackDelegate" else ""
+                body = join "\n" $ List.filter nonblank [ad, od, gd, pcd] in
                 List.join "\n" [head, body]
 
-        generateTransitionActionType : Nat -> String -> List1 Event -> String
-        generateTransitionActionType idt pre es
+        generateTransitionActionType : Nat -> String -> Bool -> List1 Event -> List Port -> String
+        generateTransitionActionType idt pre ignoreStateAction es ps
           = let params = parametersOfEvents es
-                paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, srcstate: int, dststate: int") params in
-                (indent idt) ++ "TransitionActionFunc = proc (" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.}"
+                paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, srcstate: int, dststate: int") params
+                ports = map (\x => "Option[" ++ (toNimType x) ++ "]") $ filter (\t => t /= TUnit) $ map (\(MkPort _ t) => returnType t) ps
+                returns = if ignoreStateAction && (length ports) > 0
+                             then "(" ++ List.join ", " ((pre ++ "Model") :: ports) ++ ")"
+                             else pre ++ "Model"
+                in
+                if ignoreStateAction
+                   then (indent idt) ++ "TransitionActionFunc = proc (" ++ paramcodes ++ "): " ++ returns ++ " {.gcsafe.}"
+                   else (indent idt) ++ "TransitionActionFunc = proc (" ++ paramcodes ++ "): " ++ returns ++ " {.gcsafe.}"
 
         generateStateActionType : Nat -> String -> String
         generateStateActionType idt pre = (indent idt) ++ "StateActionFunc = proc (fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, state: int): " ++ pre ++ "Model {.gcsafe.}"
@@ -375,12 +408,20 @@ toNim conf fsm
                 code = intMatrixToNim (\x => "StateActionFunc(on_exit_action" ++ (show x) ++ ")") matrix in
                 "const on_exit_actions: array[0.." ++ (show (cast ((length ss) * (length ss)) - 1)) ++ ", StateActionFunc] = [\n" ++ code ++ "\n]"
 
-    generateAction : String -> String -> String -> (Nat, List Action) -> String
-    generateAction pre funpre paramcodes (idx, acts)
-      = let signature = "proc " ++ funpre ++ "_action" ++ (show idx) ++ "(" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.} ="
+    generateAction : String -> String -> Bool -> String -> List Port -> (Nat, List Action) -> String
+    generateAction pre funpre ignoreStateAction paramcodes ports (idx, acts)
+      = let portsigns = map (\(MkPort _ t) => "Option[" ++ (toNimType (returnType t)) ++ "]") ports
+            signature = if ignoreStateAction && (length portsigns) > 0
+                           then "proc " ++ funpre ++ "_action" ++ (show idx) ++ "(" ++ paramcodes ++ "): (" ++ (List.join ", " ((pre ++ "Model") :: portsigns)) ++ ") {.gcsafe.} ="
+                           else "proc " ++ funpre ++ "_action" ++ (show idx) ++ "(" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.} ="
             usedArgs = liftUsedArgumentsFromActions acts
-            actionsCode = generateActionsCode acts
-            body = generateActionsBody indentDelta pre (reverse actionsCode) usedArgs in
+            (actionsCode, usedPorts) = generateActionsCode ignoreStateAction acts
+            ports' = map (\p@(MkPort n t) =>
+                       if elemBy (==) p usedPorts
+                          then "some(" ++ toNimName ("value-of-port-" ++ n) ++ ")"
+                          else "none(" ++ (toNimType (returnType t)) ++ ")") ports
+            noneports = map (\(MkPort _ t) => "none(" ++ (toNimType (returnType t)) ++ ")") ports
+            body = generateActionsBody indentDelta pre ignoreStateAction actionsCode usedArgs ports' noneports in
             signature ++ "\n" ++ body
       where
         liftUsedArgumentsFromActions : List Action -> List Name
@@ -400,36 +441,48 @@ toNim conf fsm
             liftUsedArgumentsFromActions' ((OutputAction _ es) :: xs)    acc = liftUsedArgumentsFromActions' xs $ foldl (\acc', x => foldl (\a, y => insert y a) acc' x) acc $ map (liftUsedArgumentsFromExpression) es
             liftUsedArgumentsFromActions' (_ :: xs)                      acc = liftUsedArgumentsFromActions' xs acc
 
-        generateActionsBody : Nat -> String -> List String -> List Name -> String
-        generateActionsBody idt pre bodies ns
-          = generateActionsBody' idt pre bodies ns "" "" []
+        generateActionsBody : Nat -> String -> Bool -> List String -> List Name -> List String -> List String -> String
+        generateActionsBody idt pre ignoreStateAction bodies ns ports noneports
+          = generateActionsBody' idt pre ignoreStateAction bodies ns ports noneports "" "" []
           where
-            generateActionsBody' : Nat -> String -> List String -> List Name -> String -> String -> List String -> String
-            generateActionsBody' idt pre bodies []        acc1 acc2 args = acc1 ++ (join "\n" (map (\x => (indent idt) ++ x) (args ++ bodies ++ ["result = model\n"]))) ++ acc2
-            generateActionsBody' idt pre bodies (n :: ns) acc1 acc2 args = generateActionsBody' (idt + indentDelta) pre bodies ns (acc1 ++ (indent idt) ++ "if " ++ (toNimName n) ++ "_opt.isSome:\n") ((indent idt) ++ "else:\n" ++ (indent (idt + indentDelta)) ++ "result = model\n" ++ acc2) (("let " ++ (toNimName n) ++ " = " ++ (toNimName n) ++ "_opt.get") :: args)
+            generateActionsBody' : Nat -> String -> Bool -> List String -> List Name -> List String -> List String -> String -> String -> List String -> String
+            generateActionsBody' idt pre ignoreStateAction bodies []        ports noneports acc1 acc2 args
+              = if ignoreStateAction && (length ports) > 0
+                   then acc1 ++ (join "\n" (map (\x => (indent idt) ++ x) (args ++ bodies ++ ["result = (" ++ (List.join ", " $ "model" :: ports)++ ")\n"]))) ++ acc2
+                   else acc1 ++ (join "\n" (map (\x => (indent idt) ++ x) (args ++ bodies ++ ["result = model\n"]))) ++ acc2
+            generateActionsBody' idt pre ignoreStateAction bodies (n :: ns) ports noneports acc1 acc2 args
+              = if ignoreStateAction && (length ports) > 0
+                   then generateActionsBody' (idt + indentDelta) pre ignoreStateAction bodies ns ports noneports (acc1 ++ (indent idt) ++ "if " ++ (toNimName n) ++ "_opt.isSome:\n") ((indent idt) ++ "else:\n" ++ (indent (idt + indentDelta)) ++ "result = (" ++ (List.join ", " ("model" :: noneports)) ++ ")\n" ++ acc2) (("let " ++ (toNimName n) ++ " = " ++ (toNimName n) ++ "_opt.get") :: args)
+                   else generateActionsBody' (idt + indentDelta) pre ignoreStateAction bodies ns ports noneports (acc1 ++ (indent idt) ++ "if " ++ (toNimName n) ++ "_opt.isSome:\n") ((indent idt) ++ "else:\n" ++ (indent (idt + indentDelta)) ++ "result = model\n" ++ acc2) (("let " ++ (toNimName n) ++ " = " ++ (toNimName n) ++ "_opt.get") :: args)
 
-        generateActionsCode : List Action -> List String
+        generateActionsCode : Bool -> List Action -> (List String, List Port)
         generateActionsCode
-          = generateActionsCode' []
+          = generateActionsCode' [] []
           where
-            generateActionsCode' : List String -> List Action -> List String
-            generateActionsCode' acc []                             = acc
-            generateActionsCode' acc ((AssignmentAction l r) :: xs) = generateActionsCode' (((toNimModelAttribute (show l)) ++ " = " ++ (toNimExpression "fsm.action_delegate" r)) :: acc) xs
-            generateActionsCode' acc ((OutputAction p es) :: xs)    = generateActionsCode' (("fsm.output_delegate." ++ toNimName(p.name) ++ "(" ++ (List.join ", " (map (toNimExpression "fsm.action_delegate") ((IdentifyExpression "model") :: es))) ++ ")") :: acc) xs
-            generateActionsCode' acc (_ :: xs)                      = generateActionsCode' acc xs
+            generateActionsCode' : List String -> List Port -> Bool -> List Action -> (List String, List Port)
+            generateActionsCode' acc1 acc2 _                 []                             = (reverse acc1, reverse acc2)
+            generateActionsCode' acc1 acc2 ignoreStateAction ((AssignmentAction l r) :: xs) = generateActionsCode' (((toNimModelAttribute (show l)) ++ " = " ++ (toNimExpression "fsm.action_delegate" r)) :: acc1) acc2 ignoreStateAction xs
+            generateActionsCode' acc1 acc2 True              ((OutputAction p es) :: xs)    = if returnType p.tipe == TUnit
+                                                                                                 then generateActionsCode' (("fsm.output_delegate." ++ toNimName(p.name) ++ "(" ++ (List.join ", " (map (toNimExpression "fsm.action_delegate") ((IdentifyExpression "model") :: es))) ++ ")") :: acc1) (p :: acc2) True xs
+                                                                                                 else generateActionsCode' (("let " ++ (toNimName ("value-of-port-" ++ p.name)) ++ " = fsm.output_delegate." ++ toNimName(p.name) ++ "(" ++ (List.join ", " (map (toNimExpression "fsm.action_delegate") ((IdentifyExpression "model") :: es))) ++ ")") :: acc1) (p :: acc2) True xs
+            generateActionsCode' acc1 acc2 False             ((OutputAction p es) :: xs)    = if returnType p.tipe == TUnit
+                                                                                                 then generateActionsCode' (("fsm.port_callback_delegate." ++ toNimName(p.name) ++ "()") :: ("fsm.output_delegate." ++ toNimName(p.name) ++ "(" ++ (List.join ", " (map (toNimExpression "fsm.action_delegate") ((IdentifyExpression "model") :: es))) ++ ")") :: acc1) (p :: acc2) False xs
+                                                                                                 else generateActionsCode' (("fsm.port_callback_delegate." ++ toNimName(p.name) ++ "(fsm.output_delegate." ++ toNimName(p.name) ++ "(" ++ (List.join ", " (map (toNimExpression "fsm.action_delegate") ((IdentifyExpression "model") :: es))) ++ "))") :: acc1) (p :: acc2) False xs
+            generateActionsCode' acc1 acc2 ignoreStateAction (_ :: xs)                      = generateActionsCode' acc1 acc2 ignoreStateAction xs
 
-    generateTransitionActions : String -> List1 State -> List1 Event -> List1 Transition -> String
-    generateTransitionActions pre ss es ts
+    generateTransitionActions : String -> Bool -> List1 State -> List1 Event -> List1 Transition -> List Port -> String
+    generateTransitionActions pre ignoreStateAction ss es ts ps
       = let as = nub $ actionsOfTransitions ts
             params = parametersOfEvents es
             paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]" ) ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, srcstate: int, dststate: int") params
-            funcs = map (generateAction pre "transition" paramcodes) (Data.List.enumerate ([] :: as)) in
+            ports = filter (\(MkPort _ t) => (returnType t) /= TUnit) ps
+            funcs = map (generateAction pre "transition" ignoreStateAction paramcodes ports) (Data.List.enumerate ([] :: as)) in
             join "\n" funcs
 
     generateStateActions : (State -> Maybe (List Action)) -> String -> String -> List1 State -> String
     generateStateActions f pre funpre ss
       = let as = nub $ actionsOfStates f ss
-            funcs = map (generateAction pre funpre ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, state: int")) (Data.List.enumerate ([] :: as)) in
+            funcs = map (generateAction pre funpre False ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, state: int") []) (Data.List.enumerate ([] :: as)) in
             join "\n" funcs
 
     generateActions : AppConfig -> Fsm -> String
@@ -438,7 +491,7 @@ toNim conf fsm
             ss  = fsm.states
             es  = fsm.events
             ts  = fsm.transitions in
-            join "\n" $ List.filter nonblank [ generateTransitionActions pre ss es ts
+            join "\n" $ List.filter nonblank [ generateTransitionActions pre conf.ignoreStateAction ss es ts fsm.ports
                                              , if conf.ignoreStateAction
                                                   then ""
                                                   else generateStateActions (.onEnter) pre "on_enter" ss
@@ -447,14 +500,15 @@ toNim conf fsm
                                                   else generateStateActions (.onExit) pre "on_exit" ss
                                              ]
 
-    generateEvents : Fsm -> String
-    generateEvents fsm
-      = let pre    = camelize fsm.name
-            es     = fsm.events
-            ts     = flatten $ List1.forget $ map (List1.forget . (.triggers)) fsm.transitions
-            egts   = eventGuardTags fsm.transitions
-            params = parametersOfEvents es in
-            join "\n\n" $ map (\(e, gs) => generateEvent pre e gs egts params) $ eventWithGuards ts
+    generateEvents : AppConfig -> Fsm -> String
+    generateEvents conf fsm
+      = let pre = camelize fsm.name
+            es = fsm.events
+            ts = flatten $ List1.forget $ map (List1.forget . (.triggers)) fsm.transitions
+            egts = eventGuardTags fsm.transitions
+            params = parametersOfEvents es
+            filteredPorts = filter (\(MkPort _ t) => (returnType t) /= TUnit) fsm.ports in
+            join "\n\n" $ map (\(e, gs) => generateEvent pre conf.ignoreStateAction filteredPorts e gs egts params) $ eventWithGuards ts
       where
         generateEventBody : Nat -> List String -> Event -> List TestExpression -> String
         generateEventBody idt egts e [] = (indent idt) ++ "let idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index (show e) egts))
@@ -466,19 +520,22 @@ toNim conf fsm
                                                                       code = (indent idt) ++ ifcode ++ (toNimTestExpression "fsm.guard_delegate" x) ++ ":\n" ++ (indent (idt + indentDelta)) ++ "idx = (model.state * " ++ (show (length egts)) ++ ") + " ++ (foldr (\x, acc => show x) "0" (index ((show e) ++ (show x)) egts)) in
                                                                       generateEventBody' idt egts e xs False $ code :: acc
 
-        generateEvent : String -> Event -> List TestExpression -> List String -> List Parameter -> String
-        generateEvent pre e gs egts ps
+        generateEvent : String -> Bool -> List Port -> Event -> List TestExpression -> List String -> List Parameter -> String
+        generateEvent pre ignoreStateAction ports e gs egts ps
           = let eparams = e.params
                 paramcodes = List.join ", " $ map (\(n, t, _) => (toNimName n) ++ ": " ++ (toNimType t)) (("fsm", TRecord (pre ++ "StateMachine") [], Nothing) :: ("model", TRecord (pre ++ "Model") [], Nothing) :: eparams)
                 args = generateArguments eparams ps []
-                signature = "proc " ++ (toNimName e.name) ++ "*" ++ "(" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.} ="
+                returnSigns = map (\(MkPort _ t) => "Option[" ++ (toNimType (returnType t)) ++ "]") ports
+                signature = if ignoreStateAction && (length returnSigns) > 0
+                               then "proc " ++ (toNimName e.name) ++ "*" ++ "(" ++ paramcodes ++ "): (" ++ List.join ", " ((pre ++ "Model") :: returnSigns) ++ ") {.gcsafe.} ="
+                               else "proc " ++ (toNimName e.name) ++ "*" ++ "(" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.} ="
                 body = List.join "\n" [ generateEventBody indentDelta egts e gs
                                       , (indent indentDelta) ++ (foldl (\acc, x => acc ++ ", " ++ x) "result = exec(fsm, model, idx" args) ++ ")"
                                       ] in
                 signature ++ "\n" ++ body
           where
             generateArguments : List Parameter -> List Parameter -> List String -> List String
-            generateArguments eps [] acc = reverse acc
+            generateArguments eps []                  acc = reverse acc
             generateArguments eps (a@(n, t, _) :: xs) acc = if elemBy (==) a eps
                                                                then generateArguments eps xs $ ("some(" ++ (toNimName n) ++ ")") :: acc
                                                                else generateArguments eps xs $ ("none(" ++ (toNimType t) ++ ")") :: acc
@@ -487,18 +544,23 @@ toNim conf fsm
     generateInternalExec conf fsm
       = let pre = camelize fsm.name
             statelen = length fsm.states
-            es  = fsm.events
+            es = fsm.events
             params = parametersOfEvents es
             paramcodes = foldl (\acc, (n, t, _) => acc ++ ", " ++ (toNimName n) ++ "_opt: Option[" ++ (toNimType t) ++ "]") ("fsm: " ++ pre ++ "StateMachine, model: " ++ pre ++ "Model, idx: int") params
-            argcodes = List.join ", " ("fsm" :: (if conf.ignoreStateAction then "model" else "model1") :: "srcstate" :: "dststate" :: (map (\(n, _, _) => n ++ "_opt") params)) in
-            List.join "\n" [ "proc exec(" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.} ="
+            argcodes = List.join ", " ("fsm" :: (if conf.ignoreStateAction then "model" else "model1") :: "srcstate" :: "dststate" :: (map (\(n, _, _) => n ++ "_opt") params))
+            filteredPorts = filter (\(MkPort _ t) => (returnType t) /= TUnit) fsm.ports
+            returnSigns = map (\(MkPort _ t) => "Option[" ++ (toNimType (returnType t)) ++ "]") filteredPorts
+            returnArgs = map (\(MkPort n _) => toNimName ("value-of-port-" ++ n)) filteredPorts in
+            List.join "\n" [ if conf.ignoreStateAction && (length returnSigns) > 0
+                                then "proc exec(" ++ paramcodes ++ "): (" ++ (List.join ", " ((pre ++ "Model") :: returnSigns)) ++ ") {.gcsafe.} ="
+                                else "proc exec(" ++ paramcodes ++ "): " ++ pre ++ "Model {.gcsafe.} ="
                            , (indent indentDelta) ++ "let"
                            , (indent (indentDelta * 2)) ++ "srcstate = model.state"
                            , (indent (indentDelta * 2)) ++ "dststate = transition_states[idx]"
-                           , if conf.ignoreStateAction
-                                then List.join "\n" [ (indent (indentDelta * 2)) ++ "model1 = transition_actions[idx](" ++ argcodes ++ ")"
+                           , if conf.ignoreStateAction && (length returnArgs) > 0
+                                then List.join "\n" [ (indent (indentDelta * 2)) ++ "(" ++ (List.join ", " ("model1" :: returnArgs)) ++  ") = transition_actions[idx](" ++ argcodes ++ ")"
                                                     , (indent indentDelta) ++ "model1.state = dststate"
-                                                    , (indent indentDelta) ++ "result = model1"
+                                                    , (indent indentDelta) ++ "result = (" ++ (List.join ", " ("model1" :: returnArgs)) ++ ")"
                                                     ]
                                 else List.join "\n" [ (indent (indentDelta * 2)) ++ "model1 = on_exit_actions[srcstate * " ++ (show statelen) ++ " + dststate](fsm, model, srcstate)"
                                                     , (indent (indentDelta * 2)) ++ "model2 = transition_actions[idx](" ++ argcodes ++ ")"
