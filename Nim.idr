@@ -72,7 +72,7 @@ eventWithGuards
 
 eventGuardTags : List1 Transition -> List String
 eventGuardTags trans
-  = let triggers = flatten $ List1.toList $ (map (\x => List1.toList x.triggers) trans) in
+  = let triggers = flatten $ List1.forget $ (map (\x => List1.forget x.triggers) trans) in
         eventGuardTags' (eventWithGuards triggers) []
   where
     eventGuardTags' : List (Event, List TestExpression) -> List String -> List String
@@ -165,7 +165,7 @@ toNim conf fsm
             env = rootEnv fsm
             rks = liftRecords fsm.model
             oas = liftOutputActions fsm.states fsm.transitions
-            ges = nub $ filter applicationExpressionFilter $ flatten $ map expressionsOfTestExpression $ flatten $ map guardsOfTransition $ List1.toList fsm.transitions
+            ges = nub $ filter applicationExpressionFilter $ flatten $ map expressionsOfTestExpression $ flatten $ map guardsOfTransition $ List1.forget fsm.transitions
             ads = generateActionDelegates indentDelta pre env fsm.states fsm.transitions
             ods = generateOutputDelegates indentDelta pre env oas
             gds = generateGuardDelegates indentDelta pre env ges in
@@ -200,7 +200,7 @@ toNim conf fsm
         generateModel : Nat -> String -> List Parameter -> String
         generateModel idt pre as
           = List.join "\n" [ (indent idt) ++ pre ++ "Model* = ref object of RootObj"
-                           , List1.join "\n" $ map (generateAttribute (idt + indentDelta)) (("state", (TPrimType PTInt), Nothing) :: as)
+                           , List1.join "\n" $ map (generateAttribute (idt + indentDelta)) (("state", (TPrimType PTInt), Nothing) ::: as)
                            ]
 
         generateStates : Nat -> String -> List1 State -> String
@@ -246,7 +246,7 @@ toNim conf fsm
 
             actionTypeOfStates : SortedMap Expression Tipe -> List1 State -> SortedMap String Tipe -> SortedMap String Tipe
             actionTypeOfStates env states acc
-              = let actions = flatten $ map liftActionsFromState $ List1.toList states
+              = let actions = flatten $ map liftActionsFromState $ List1.forget states
                     ats = foldl (applicationExpressionTypeOfAssigmentAction env) acc actions
                     ats' = foldl (applicationExpressionTypeOfOutputAction env) ats actions in
                     ats'
@@ -443,7 +443,7 @@ toNim conf fsm
     generateEvents fsm
       = let pre    = camelize fsm.name
             es     = fsm.events
-            ts     = flatten $ List1.toList $ map (List1.toList . (.triggers)) fsm.transitions
+            ts     = flatten $ List1.forget $ map (List1.forget . (.triggers)) fsm.transitions
             egts   = eventGuardTags fsm.transitions
             params = parametersOfEvents es in
             join "\n\n" $ map (\(e, gs) => generateEvent pre e gs egts params) $ eventWithGuards ts
