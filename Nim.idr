@@ -557,7 +557,7 @@ toNim conf fsm
                            , (indent indentDelta) ++ "let"
                            , (indent (indentDelta * 2)) ++ "srcstate = model.state"
                            , (indent (indentDelta * 2)) ++ "dststate = transition_states[idx]"
-                           , if conf.ignoreStateAction && (length returnArgs) > 0
+                           , if conf.ignoreStateAction
                                 then List.join "\n" [ (indent (indentDelta * 2)) ++ "(" ++ (List.join ", " ("model1" :: returnArgs)) ++  ") = transition_actions[idx](" ++ argcodes ++ ")"
                                                     , (indent indentDelta) ++ "model1.state = dststate"
                                                     , (indent indentDelta) ++ "result = (" ++ (List.join ", " ("model1" :: returnArgs)) ++ ")"
