@@ -325,12 +325,17 @@ toNim conf fsm
         generatePortCallbackDelegates : Nat -> String -> List Port -> String
         generatePortCallbackDelegates idt pre ports
           = let head = (indent idt) ++ pre ++ "PortCallback* = ref object of RootObj"
-                ps = map (generatePortCallbackDelegate (idt + indentDelta)) ports
+                ps = map (generatePortCallbackDelegate (idt + indentDelta)) $ filter portReturnTypeFilter ports
                 body = List.join "\n" ps in
                 if length ps > Z
                    then List.join "\n" [ head, body ]
                    else ""
           where
+            portReturnTypeFilter : Port -> Bool
+            portReturnTypeFilter (MkPort pname t)
+              = let t' = returnType t in
+                    t' /= TUnit
+
             generatePortCallbackDelegate : Nat -> Port -> String
             generatePortCallbackDelegate idt (MkPort pname t)
               = let t' = returnType t in
@@ -466,7 +471,7 @@ toNim conf fsm
                                                                                                  then generateActionsCode' (("fsm.output_delegate." ++ toNimName(p.name) ++ "(" ++ (List.join ", " (map (toNimExpression "fsm.action_delegate") ((IdentifyExpression "model") :: es))) ++ ")") :: acc1) (p :: acc2) True xs
                                                                                                  else generateActionsCode' (("let " ++ (toNimName ("value-of-port-" ++ p.name)) ++ " = fsm.output_delegate." ++ toNimName(p.name) ++ "(" ++ (List.join ", " (map (toNimExpression "fsm.action_delegate") ((IdentifyExpression "model") :: es))) ++ ")") :: acc1) (p :: acc2) True xs
             generateActionsCode' acc1 acc2 False             ((OutputAction p es) :: xs)    = if returnType p.tipe == TUnit
-                                                                                                 then generateActionsCode' (("fsm.port_callback_delegate." ++ toNimName(p.name) ++ "()") :: ("fsm.output_delegate." ++ toNimName(p.name) ++ "(" ++ (List.join ", " (map (toNimExpression "fsm.action_delegate") ((IdentifyExpression "model") :: es))) ++ ")") :: acc1) (p :: acc2) False xs
+                                                                                                 then generateActionsCode' (("fsm.output_delegate." ++ toNimName(p.name) ++ "(" ++ (List.join ", " (map (toNimExpression "fsm.action_delegate") ((IdentifyExpression "model") :: es))) ++ ")") :: acc1) (p :: acc2) False xs
                                                                                                  else generateActionsCode' (("fsm.port_callback_delegate." ++ toNimName(p.name) ++ "(fsm.output_delegate." ++ toNimName(p.name) ++ "(" ++ (List.join ", " (map (toNimExpression "fsm.action_delegate") ((IdentifyExpression "model") :: es))) ++ "))") :: acc1) (p :: acc2) False xs
             generateActionsCode' acc1 acc2 ignoreStateAction (_ :: xs)                      = generateActionsCode' acc1 acc2 ignoreStateAction xs
 
