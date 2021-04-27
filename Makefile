@@ -12,7 +12,7 @@ all: $(TARGET)
 
 install: $(PREFIX)/$(NAME-LINK)
 
-$(PREFIX)/$(NAME-LINK):
+$(PREFIX)/$(NAME-LINK): $(TARGET)
 	sudo install $(TARGET) $(PREFIX)/$(NAME-LINK)
 
 $(TARGET): $(DSTSRCS) $(BUILDDIR)/$(PRJCONF) | prebuild
